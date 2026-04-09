@@ -1,0 +1,1830 @@
+openapi: "3.0.1"
+info:
+  title: rest-api
+  version: 1.0.0
+  description: |
+    Refer to our website to know more about [Clari Copilot](https://www.clari.com/products/copilot/).
+
+    **To learn how to use the Clari Copilot API, please follow this <a href="https://community.clari.com/product-q-a-6/how-to-use-copilot-apis-2258" target="_blank">integration guide (link)</a>.**<br/> It explains how you get your API key, gives context on how the endpoints work together, and provides example code.
+
+    # Authentication
+
+    You need to pass both API key and password in specified headers to authenticate with Clari Copilot API.
+
+    Example curl command fetching users:
+
+    <blockquote>
+      <code>
+        curl -H "X-Api-Key:&lt;your_api_key&gt;" -H "X-Api-Password:&lt;your_api_password&gt;" "https://rest-api.copilot.clari.com/users"
+      </code>
+    </blockquote>
+
+    You'll find API key and secret in workspace settings > integrations > Clari Copilot API
+
+    <img src="/assets/workspace-settings.png" width=150 /><img src="/assets/integrations.png" width=200 /><img src="/assets/apikey.png" width=200 />
+
+    <SecurityDefinitions />
+
+    # Rate limit
+
+    Default rate limit is 10 per second.
+
+    Also 100k requests per week is also imposed. Week starts every Sunday 0 GMT.
+
+    # Example
+    
+    Here is a python script that demonstrate how to fetch calls and print csv: <a href="./copilot_calls_example.py" download>Calls example</a>
+
+    Here is a python script that demonstrate how to use CRM endpoints: <a href="./copilot_crm_example.py" download>CRM example</a>
+
+    # Deprecation
+
+    This api's old domain https://rest-api.trywingman.com is deprecated and will be supported till end of 2023 to allow existing clients to migrate.
+  contact:
+    name: Support
+    email: copilot-support@clari.com
+    url: https://api-doc.copilot.clari.com
+  x-logo:
+    url: /logo.png
+servers:
+  - url: "https://rest-api.copilot.clari.com"
+tags:
+  - name: call
+    description: Calls in Copilot
+  - name: user
+    description: Users in Copilot
+  - name: topics
+    description: Topics in Copilot
+  - name: contact
+    description: Contacts in CRM
+  - name: account
+    description: Accounts in CRM
+  - name: deal
+    description: Deals in CRM
+  - name: scorecard
+    description: Scorecards in Copilot
+x-tagGroups:
+  - name: General
+    tags:
+      - call
+      - user
+      - topics
+      - scorecard
+  - name: CRM Objects
+    tags:
+      - contact
+      - account
+      - deal
+paths:
+  /topics:
+    get:
+      tags:
+        - topics
+      summary: List of Keyword Topics
+      description: Returns All unique keyword topics
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopicsResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+  /v2/topics:
+    get:
+      tags:
+        - topics
+      summary: List of Topics
+      description: |
+        Returns details of all topics.
+
+        You can filter topics based on their last modified time using the following optional query parameters.
+
+        ### Examples
+        - All topics: `/v2/topics`
+        - Topics modified **before** a date: `/v2/topics?filterModifiedLt=2000-01-01T00:00:00+0000`
+        - Topics modified **after** a date: `/v2/topics?filterModifiedGt=2000-01-01T00:00:00+0000`
+        - Topics modified **between two dates**: `/v2/topics?filterModifiedGt=2000-01-01T00:00:00+0000&filterModifiedLt=2025-01-01T00:00:00+0000`
+
+        Use an ISO 8601 formatted datetime string (e.g., 2020-01-01T00:00:00+0000). Ensure the value is URL-encoded when used in a query string.
+      parameters:
+        - name: filterModifiedLt
+          in: query
+          description: >
+            If passed, filters out topics modified (updated) after passed time. 
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z. 
+            If invalid value is passed, results in bad request error.
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: filterModifiedGt
+          in: query
+          description: >
+            If passed, filters out topics modified (updated) before passed time. 
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z. 
+            If invalid value is passed, results in bad request error.
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        200:
+          description: A list of topics matching the filter criteria.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V2TopicsResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: [ ]
+          api_password: [ ]
+
+
+  /scorecard:
+    get:
+      tags:
+        - scorecard
+      summary: List of scorecard
+      description: |+
+        This endpoint allows listing scorecard by different parameters.
+        Filter parameters have filter prefix and sort parameters have sort prefix.
+        You can fetch only 100 scorecard in page, use skip and limit to scroll through scorecards.
+      parameters:
+        - name: skip
+          in: query
+          description: >
+            Skip specified number of scorecards. Defaults to 0, if not passed.
+            Should be integer, else returns bad request error.
+          schema:
+            default: 0
+            type: integer
+            minimum: 0
+            maximum: 10000
+        - name: limit
+          in: query
+          description: >
+            Limits the number of scorecards returned to given number. Defaults
+            to 50, if not passed. Should be integer, else returns bad request error.
+          schema:
+            default: 50
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: filterTimeGt
+          in: query
+          description: >
+            If passed, filters out scorecards before passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterTimeLt
+          in: query
+          description: >
+            If passed, filters out scorecards after passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterRepId
+          in: query
+          description: >
+            This is a single-value parameter, if passed, will filter
+            scorecards for the given user id who is getting scored for the call
+          schema:
+            type: string
+        - name: filterScorerId
+          in: query
+          description: >
+            This is a single-value parameter, if passed, will filter
+            scorecards for the given user id, who are scoring the calls
+          schema:
+            type: string
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorecardsResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /scorecard-template:
+    get:
+      tags:
+        - scorecard
+      summary: List of scorecard templates
+      description: |+
+        This endpoint allows listing all the scorecard template and information about them
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorecardTemplateResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /calls:
+    get:
+      tags:
+        - call
+      summary: List calls
+      description: |+
+        This endpoint allows listing calls by different parameters.
+        Filter parameters have filter prefix and sort parameters have sort prefix.
+
+        You can fetch only 100 calls in page, use skip and limit to scroll through calls.
+
+        To get transcript, deal live stage fetch call individually using call-details endpoint.
+
+        Note: 'includePagination=false' will greatly improve endpoint response.
+      parameters:
+        - name: skip
+          in: query
+          description: >
+            Skip specified number of calls. Defaults to 0, if not passed.
+            Should be integer, else returns bad request error.
+          schema:
+            default: 0
+            type: integer
+            minimum: 0
+            maximum: 10000
+        - name: limit
+          in: query
+          description: >
+            Limits the number of calls returned to given number. Defaults
+            to 25, if not passed. Should be integer, else returns bad request error.
+          schema:
+            default: 25
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: filterUser
+          in: query
+          description: >
+            This is a multi-value parameter, if passed, will filter only
+            calls that involve users passed. Users should be referred to by email
+            as seen in manage users page in Copilot settings.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: filterAttendees
+          in: query
+          description: >
+            This is a multi-value parameter, if passed, will filter only
+            calls that involve meeting attendees passed. Attendees should be referred to by email.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: filterTopics
+          in: query
+          description: >
+            This is a multi-value parameter, if passed, will filter only
+            calls of topics passed.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: filterStatus
+          in: query
+          description: >
+            This is a multi-value parameter, if passed, will filter only
+            calls of statuses passed.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/CallStatus"
+        - name: filterType
+          in: query
+          description: >
+            This is a multi-value parameter, if passed, will filter only
+            calls of types passed.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/CallType"
+        - name: filterSourceId
+          in: query
+          description: >
+            If passed, will include only calls with passed source id.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: filterTimeGt
+          in: query
+          description: >
+            If passed, filters out calls scheduled/started(for dialer and
+            adhoc calls) before passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterTimeLt
+          in: query
+          description: >
+            If passed, filters out calls scheduled/started(for dialer and
+            adhoc calls) after passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterModifiedGt
+          in: query
+          description: >
+            If passed, filters out calls modified (status updated) before
+            passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterModifiedLt
+          in: query
+          description: >
+            If passed, filters out calls modified (status updated) after
+            passed time.
+
+            Use ISO date-time format, eg: 2020-01-01T00:00:00Z.
+            If invalid value is passed, results in bad request error.
+          schema:
+            type: string
+            format: date-time
+        - name: filterDurationGt
+          in: query
+          description: >
+            If passed, filters out calls shorter than passed value in seconds.
+            If non integer is passed as value, results in bad request error.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 7200
+        - name: filterDurationLt
+          in: query
+          description: >
+            If passed, filters out calls longer than passed value in seconds.
+            If non integer is passed as value, results in bad request error.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 7200
+        - name: sortTime
+          in: query
+          description: Sort by call scheduled/start time.
+          schema:
+            enum: ["asc", "desc"]
+            type: string
+        - name: sortProcessed
+          in: query
+          description: Sort by call last processed time.
+          schema:
+            enum: ["asc", "desc"]
+            type: string
+        - name: includePrivate
+          in: query
+          description: If true, includes private calls also in response.
+            If false, response does not include private calls.
+            Invalid value results in error.
+          schema:
+            enum: ["true", "false", 0, 1]
+            type: string
+            default: "false"
+        - name: includeAudio
+          in: query
+          description: If true, includes signed url for audio.
+            If false, response does not include audio url. The signed url is valid for the next 4 hours.
+          schema:
+            enum: [ true, false]
+            type: boolean
+            default: false
+        - name: includeVideo
+          in: query
+          description: If true, includes signed url for video.
+            If false, response does not include video url. The signed url is valid for the next 4 hours.
+          schema:
+            enum: [ true, false]
+            type: boolean
+            default: false
+        - name: includePagination
+          in: query
+          description: If true, includes pagination object in the response that shows total count.
+            If false, query performance is much faster as it does not include the pagination object.
+          schema:
+            enum: [ true, false]
+            type: boolean
+            default: true
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallsResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /call-details:
+    get:
+      tags:
+        - call
+      summary: Call details
+      description: Returns details of call with id passed as query param
+      parameters:
+        - name: id
+          in: query
+          description: call id
+          required: true
+          schema:
+            type: string
+        - name: includeAudio
+          in: query
+          description: If true, includes signed url for audio.
+            If false, response does not include audio url. The signed url is valid for the next 4 hours.
+          schema:
+            enum: [ true, false ]
+            type: boolean
+            default: false
+        - name: includeVideo
+          in: query
+          description: If true, includes signed url for video.
+            If false, response does not include video url. The signed url is valid for the next 4 hours.
+          schema:
+            enum: [ true, false ]
+            type: boolean
+            default: false
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallDetailsResponse"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /users:
+    get:
+      tags:
+        - user
+      summary: List users
+      description: Returns current users in Copilot system
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsersResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /create-call:
+    post:
+      tags:
+        - call
+      summary: Create call
+      description: Creates a new call in Copilot system. Call's video link can be passed in the audio_url field.
+      x-codeSamples:
+        - lang: 'cURL'
+          source: |
+            curl -XPOST -H "X-Api-Key:<your_api_key>" -H "X-Api-Password:<your_api_password>" \
+              "https://rest-api.copilot.clari.com/create-call?source_id=abcd1234&title=My%20test%20call&type=RECORDING&call_time=2020-01-01T00:00:00.000Z&user_emails=abc@xyz.com&user_emails=def@xyz.com&other_phone=&other_email=a@pqr.com&other_name=Mr.%20a&audio_url=http://myhost.com/paht/to/recording&header_key=optional_key&header_value=optional_value"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - source_id
+              - call_time
+              - type
+              - audio_url
+              properties:
+                source_id:
+                  description: >
+                    Id of call in source system to de duplicate
+                  type: string
+                force_overwrite_old_call:
+                  description: >
+                    Flag to overwrite old call with same source id incase it already exists in system. Default false.
+                  type: boolean
+                stereo_to_mono:
+                  description: >
+                    Flag to process only a single channel if the audio/video file has stereo audio with same data in both channels.
+                  type: boolean
+                title:
+                  description: >
+                    Title of call in Copilot system.
+                    Optional: if ignored, title will be user_name / {other_name/email/phone}
+                  type: string
+                type:
+                  description: >
+                    Type of call to be created.
+                  type: string
+                  $ref: "#/components/schemas/APICallType"
+                call_time:
+                  description: >
+                    Start time of call.
+                  type: string
+                  format: date-time
+                user_emails:
+                  description: >
+                    Array of email ids of user this call belongs to.
+                    "no recording user" error will be thrown if there are no recording users in (user_emails U source_user_ids)
+                  type: array
+                  items:
+                    type: string
+                source_user_ids:
+                  description: >
+                    Array of ids of users in source this call belongs to.
+                    Users need to be updated with that id in Copilot system for right association, talk to Copilot support to know more.
+                  type: array
+                  items:
+                    type: string
+                other_phone:
+                  description: >
+                    Array of phone of external participants.
+                    Number of phone, email, name should be same.
+                  type: array
+                  items:
+                    type: string
+                other_email:
+                  description: >
+                    Array of email of external participants.
+                    Number of phone, email, name should be same.
+                  type: array
+                  items:
+                    type: string
+                other_name:
+                  description: >
+                    Array of name of external participants.
+                    Number of phone, email, name should be same.
+                  type: array
+                  items:
+                    type: string
+                audio_url:
+                  description: >
+                    Url to access call audio or video.
+                  type: string
+                audio_format:
+                  description: >
+                    Format of call audio or video.
+                    Optional: if ignored, will be infered from audio_url extension.
+                  type: string
+                header_key:
+                  description: >
+                    Array of key of header necessary to access audio.
+                  type: array
+                  items:
+                      type: string
+                header_value:
+                  description: >
+                    Array of value of header necessary to access audio.
+                  type: array
+                  items:
+                    type: string
+                external_transcript:
+                  description: >
+                    Transcript. Optional: if ignored, Copilot will transcribe the call.
+                  type: object
+                  required: false
+                  $ref: "#/components/schemas/ExternalTranscript"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateCallResponse"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /create-account:
+    post:
+      tags:
+        - account
+      summary: Create account
+      description: Creates a data for new account in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountWithoutId"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /get-account:
+    get:
+      tags:
+        - account
+      summary: Read account
+      description: Returns details of account with source id passed as query param
+      parameters:
+        - name: id
+          in: query
+          description: source id of the account
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /update-account:
+    put:
+      tags:
+        - account
+      summary: Update account
+      description: Creates a data for new account in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Account"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /delete-account:
+    delete:
+      tags:
+        - account
+      summary: Delete account
+      description: Returns details of last snapshot of the deleted account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                id:
+                  type: string
+                  description: source id of account
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /create-contact:
+    post:
+      tags:
+        - contact
+      summary: Create contact
+      description: Creates a data for new contact in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactWithoutId"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /get-contact:
+    get:
+      tags:
+        - contact
+      summary: Read contact
+      description: Returns details of contact with source id passed as query param
+      parameters:
+        - name: id
+          in: query
+          description: source id of the contact
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /update-contact:
+    put:
+      tags:
+        - contact
+      summary: Update contact
+      description: Update a data for new contact in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Contact"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /delete-contact:
+    delete:
+      tags:
+        - contact
+      summary: Delete contact
+      description: Returns details of last snapshot of deleted contact
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                id:
+                  type: string
+                  description: source id of contact
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /create-deal:
+    post:
+      tags:
+        - deal
+      summary: Create deal
+      description: Creates a data for new deal in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DealWithoutId"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deal"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /get-deal:
+    get:
+      tags:
+        - deal
+      summary: Read deal
+      description: Returns details of deal with source id passed as query param
+      parameters:
+        - name: id
+          in: query
+          description: source id of the deal
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deal"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /update-deal:
+    put:
+      tags:
+        - deal
+      summary: Update deal
+      description: Update a data for new deal in Copilot system
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Deal"
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deal"
+        400:
+          $ref: "#/components/responses/400"
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+  /delete-deal:
+    delete:
+      tags:
+        - deal
+      summary: Delete deal
+      description: Returns details of last snapshot of the deleted deal
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                id:
+                  type: string
+                  description: source id of deal
+      responses:
+        200:
+          description: 200 response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deal"
+        400:
+          $ref: "#/components/responses/400"
+        404:
+          description: Not found
+          content:
+            application/json:
+              schema:
+                type: object
+        500:
+          $ref: "#/components/responses/500"
+      security:
+        - api_key: []
+          api_password: []
+
+components:
+  responses:
+    400:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            type: object
+    500:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            type: object
+  schemas:
+    Empty:
+      title: Empty Schema
+      type: object
+    UsersResponse:
+      title: List of users
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+    TopicsResponse:
+      title: List of topics
+      type: object
+      properties:
+        topics:
+          type: array
+          items:
+            type: string
+    V2TopicsResponse:
+      title: List of Topics
+      type: object
+      properties:
+        topics:
+          type: array
+          items:
+            type: object
+            properties:
+              topic_id:
+                type: string
+              topic_name:
+                type: string
+              type:
+                type: string
+              team_ids:
+                type: array
+                items:
+                  type: string
+              custom_topic:
+                type: object
+                properties:
+                  description:
+                    type: string
+                  status:
+                    type: string
+              keyword_topic:
+                type: object
+                properties:
+                  trackers:
+                    type: array
+                    items:
+                      type: string
+    ScorecardsResponse:
+      title: List of Scorecards
+      type: object
+      properties:
+        scorecards:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scorecard"
+        pagination:
+          $ref: "#/components/schemas/PaginationInfo"
+    ScorecardTemplateResponse:
+      title: List of all Scorecard template
+      type: object
+      properties:
+        scoreCardTemplates:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoreCardTemplate"
+    CreateCallResponse:
+      title: Create call response
+      type: object
+      properties:
+        call_id:
+          type: string
+        error:
+          type: string
+    CreateDataResponse:
+      title: Return the id of the data created in Copilot db
+      type: object
+      properties:
+        id:
+          type: string
+    CallsResponse:
+      title: List of calls
+      type: object
+      properties:
+        calls:
+          type: array
+          items:
+            $ref: "#/components/schemas/Call"
+        pagination:
+          $ref: "#/components/schemas/PaginationInfo"
+    PaginationInfo:
+      title: Pagination info
+      type: object
+      properties:
+        matched:
+          type: integer
+        hasMore:
+          type: boolean
+        nextPageSkip:
+          type: integer
+    User:
+      title: User object
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum:
+            - REP
+            - MANAGER
+            - OBSERVER
+        is_recording:
+          type: boolean
+        manager_id:
+          type: string
+    StageChangeHistory:
+      title: Stage change history object
+      type: object
+      properties:
+        stage:
+          type: string
+        prev_stage:
+          type: string
+        date_changed:
+          type: string
+          format: date-time
+    CloseDateChangeHistory:
+      title: Stage change history object
+      type: object
+      properties:
+        close_date:
+          type: string
+          format: date-time
+        prev_close_date:
+          type: string
+          format: date-time
+        date_changed:
+          type: string
+          format: date-time
+    AccountWithoutId:
+      title: Account object
+      type: object
+      properties:
+        crm_id:
+          description: Id of the company in the source CRM/system
+          type: string
+        name:
+          description: Name of the company
+          type: string
+        phones:
+          description: All the phone details of the company
+          type: array
+          items:
+            type: string
+        description:
+          description: Description about the company
+          type: string
+        website:
+          description: Website address of the company
+          type: string
+        address:
+          description: Full address of the company
+          type: string
+        city:
+          description: City where the company is registered in.
+          type: string
+        state:
+          description: State where the company is registered in.
+          type: string
+        country:
+          description: Country where the company is situated.
+          type: string
+        zip:
+          description: Zip code of the registered address.
+          type: string
+        custom_fields:
+          description: Other relevant custom fields.
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomField"
+    Account:
+      title: Account object
+      type: object
+      allOf:
+      - type: object
+        properties:
+          id:
+            description: Id of account in Copilot
+            type: string
+      - $ref: "#/components/schemas/AccountWithoutId"
+    ContactWithoutId:
+      title: Contact object
+      type: object
+      properties:
+        crm_id:
+          description: Id of the contact in the source CRM system.
+          type: string
+        account_crm_id:
+          description: Account id as per the source
+          type: string
+        first_name:
+          description: First name of the contact
+          type: string
+        last_name:
+          description: Last name of the contact
+          type: string
+        job_title:
+          description: Job title of the contact
+          type: string
+        phones:
+          description: All the phone numbers of the contact
+          type: array
+          items:
+            type: string
+        stage:
+          description: Stage of the contact
+          type: string
+        reason:
+          description: Reason of the contact
+          type: string
+        emails:
+          description: All the emails of the contact
+          type: array
+          items:
+            type: string
+        is_lead:
+          description: If the contact is in lead stage
+          type: boolean
+        custom_fields:
+          description: Other relevant customer fields
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomField"
+    Contact:
+      title: Contact object
+      type: object
+      allOf:
+      - type: object
+        properties:
+          id:
+            description: Id of contact in Copilot
+            type: string
+      - $ref: "#/components/schemas/ContactWithoutId"
+    DealWithoutId:
+      title: Deal object
+      type: object
+      properties:
+        crm_id:
+          description: Id of the deal in the source CRM/system
+          type: string
+        owner_crm_id:
+          description: Id of the deal owner in the source
+          type: string
+        deal_name:
+          description: Name of the deal
+          type: string
+        amount:
+          description: Amount of the deal
+          type: string
+        close_date:
+          description: Close date of the deal
+          type: string
+          format: date-time
+        created_date:
+          description: Creation date of the deal
+          type: string
+          format: date-time
+        last_contacted:
+          description: Last contacted date wrt the deal
+          type: string
+          format: date-time
+        next_call_date:
+          description: Next call date wrt deal
+          type: string
+          format: date-time
+        stage:
+          description: Stage of the deal
+          type: string
+        probability:
+          description: Probability of the deal getting through
+          type: string
+        forecast_category:
+          description: Forecast category for the deal
+          type: string
+        account_crm_id:
+          description: accoundId of the source crm associated with the deal
+          type: string
+        stage_change_history:
+          description: All the phone details of the contact
+          type: array
+          items:
+            $ref: "#/components/schemas/StageChangeHistory"
+        close_date_change_history:
+          description: All the phone details of the contact
+          type: array
+          items:
+            $ref: "#/components/schemas/CloseDateChangeHistory"
+        custom_fields:
+          description: Other relevant customer fields
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomField"
+        deal_reason:
+          description: Reason of the deal
+          type: string
+    Deal:
+      title: Deal object
+      type: object
+      allOf:
+      - type: object
+        properties:
+          id:
+            description: Id in Copilot system
+            type: string
+      - $ref: "#/components/schemas/DealWithoutId"
+    Call:
+      title: Call object
+      type: object
+      properties:
+        id:
+          type: string
+        source_id:
+          type: string
+        title:
+          type: string
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/CallUser"
+        externalParticipants:
+          type: array
+          items:
+            $ref: "#/components/schemas/CallParticipant"
+        joinedParticipants:
+          type: array
+          items:
+            $ref: "#/components/schemas/JoinedParticipant"
+        status:
+          $ref: "#/components/schemas/CallStatus"
+        bot_not_join_reason:
+          type: array
+          items:
+            $ref: "#/components/schemas/BotNotJoinReason"
+        type:
+          $ref: "#/components/schemas/CallType"
+        time:
+          type: string
+          format: date-time
+        icaluid:
+          type: string
+        calendar_id:
+          type: string
+        recurring_event_id:
+          type: string
+        original_start_time:
+          type: string
+          format: date-time
+        last_modified_time:
+          type: string
+          format: date-time
+        audio_url:
+          type: string
+        video_url:
+          type: string
+        disposition:
+          $ref: "#/components/schemas/CallDisposition"
+        deal_name:
+          type: string
+        deal_value:
+          type: string
+        deal_close_date:
+          type: string
+          format: date-time
+        deal_stage_before_call:
+          type: string
+        account_name:
+          type: string
+        contact_names:
+          type: array
+          items:
+            type: string
+        crm_info:
+          type: object
+          properties:
+            source_crm:
+              type: string
+            deal_id:
+              type: string
+            account_id:
+              type: string
+            contact_ids:
+              type: array
+              items:
+                type: string
+        bookmark_timestamps:
+          type: array
+          items:
+            type: string
+            format: date-time
+        metrics:
+          type: object
+          properties:
+            talk_listen_ratio:
+              type: number
+            num_questions_asked:
+              type: integer
+            num_questions_asked_by_reps:
+              type: integer
+            call_duration:
+              type: integer
+            total_speak_duration:
+              type: number
+            longest_monologue_duration:
+              type: number
+            longest_monologue_start_time:
+              type: number
+            engaging_questions:
+              type: integer
+            categories:
+              type: array
+              items:
+                $ref: "#/components/schemas/Category"
+        call_review_page_url:
+          type: string
+
+    CallDetails:
+      title: Call details
+      allOf:
+      - $ref: '#/components/schemas/Call'
+      - type: object
+        properties:
+          deal_stage_live:
+            type: string
+          transcript:
+            type: array
+            items:
+              type: object
+              properties:
+                text:
+                  type: string
+                start:
+                  type: number
+                end:
+                  type: number
+                personId:
+                  type: integer
+                annotations:
+                  type: array
+                  items:
+                    anyOf:
+                      - title: Tracker annotation
+                        type: object
+                        properties:
+                          tracker:
+                            type: string
+                          phrase:
+                            type: string
+                          category:
+                            type: string
+                      - title: AI annotation
+                        type: object
+                        properties:
+                          label:
+                            type: string
+                          phrase:
+                            type: string
+          summary:
+            type: object
+            properties:
+              full_summary:
+                type: string
+              topics_discussed:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SummaryTopics"
+              key_action_items:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SummaryActionItems"
+          competitor_sentiments:
+            type: array
+            items:
+              $ref: "#/components/schemas/CompetitorSentiments"
+
+    CallDetailsResponse:
+      title: Call details response
+      type: object
+      properties:
+        call:
+          $ref: "#/components/schemas/CallDetails"
+
+    Scorecard:
+      title: scorecard object
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        rep:
+          type: string
+        scorer:
+          type: string
+        template_id:
+          type: string
+        call_id:
+          type: string
+        total_score:
+          type: number
+        remark:
+          type: string
+          description: Additional remarks or comments on the scorecard
+        questions_score:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScorecardQuestion"
+    ScoreCardTemplate:
+      title: scorecard template object
+      type: object
+      properties:
+        id:
+          type: string
+        customer_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScorecardTemplateQuestion"
+    CallStatus:
+      type: string
+      enum:
+        - SCHEDULED
+        - INITIATED
+        - INPROGRESS
+        - WAITING_IN_QUEUE
+        - PROCESSING
+        - PROCESSED
+        - ERROR_IN_TRANSCRIBE
+        - ERROR_IN_PROCESSING
+        - ERROR_IN_RECORDING
+        - UNABLE_TO_JOIN
+        - CALL_DID_NOT_HAPPEN
+        - IGNORED_BY_USER
+        - BOTJOIN_DISABLED
+        - POST_PROCESSING_DONE
+        - NO_DATA_INCALL
+        - NOBODY_JOINED_CALL
+        - BOTJOIN_DENIED
+    BotNotJoinReason:
+      type: string
+      enum:
+        - IGNORED_DUE_TO_WHITELIST
+        - CONSENT_REVOKED
+        - IGNORED_BY_USER
+        - IGNORED_CALL_TYPE_IGNORED_BY_CUSTOMER
+        - IGNORED_NO_USER_HAS_ACCEPTED_INVITE
+        - RECORDING_PERMISSION_DENIED
+        - IGNORED_NON_MEETING
+        - IGNORED_NOT_CONFIRMED
+        - IGNORED_NOT_EXTERNAL_MEETING
+        - IGNORED_NOT_ORGANIZER
+        - IGNORED
+    CallType:
+      type: string
+      enum:
+        - ZOOM
+        - GOOGLE_MEET
+        - FRESHCALLER
+        - AIRCALL_RECORDING
+        - RINGCENTRAL
+        - GOTO_MEETING
+        - OUTREACH
+        - HUBSPOT
+        - BLUE_JEANS
+        - SALESLOFT
+        - MS_TEAMS
+        - DIALPAD
+        - FRONTSPIN
+        - TALKDESK
+    APICallType:
+      type: string
+      enum:
+        - RECORDING
+        - VENDASTA
+        - KNOWLARITY
+        - CALL_HIPPO
+        - RINGOVER
+    CallDisposition:
+      type: string
+      enum:
+        - UNKNOWN_CALL_DISPOSITION
+        - CALL_CONNECTED_WITH_PROSPECT
+        - CALL_DID_NOT_CONNECT_WITH_PROSPECT
+        - CALL_NOBODY_JOINED
+        - CALL_BOTJOIN_DENIED
+    CallUser:
+      title: User in call
+      type: object
+      properties:
+        userId:
+          type: string
+        userEmail:
+          type: string
+        isOrganizer:
+          type: boolean
+        personId:
+          type: integer
+    ExternalTranscript:
+      title: External Transcript
+      type: object
+      properties:
+        external_speakers:
+          type: array
+          items:
+            type: object
+            $ref: "#/components/schemas/ExternalSpeakers"
+        ext_conversation_turns:
+          type: array
+          items:
+            type: object
+            $ref: "#/components/schemas/ExtConversationTurns"
+    ExternalSpeakers:
+      title: External Speakers
+      type: object
+      properties:
+        person_id:
+          type: string
+          description: >
+            Unique id of participant.
+        name:
+          type: string
+          description: >
+            Name of the participant.
+        email_id:
+          type: string
+          description: >
+            Email of the participant.
+    ExtConversationTurns:
+      title: External Conversation Turns
+      type: object
+      properties:
+        person_id:
+          type: string
+          description: >
+            Unique id of participant. Participant with this id should also be a part of external_speakers.
+        text:
+          type: string
+          description: >
+            Text included for turn.
+        start:
+          type: number
+          description: >
+            Turn start time in seconds.
+        end:
+          type: number
+          description: >
+            Turn end time in seconds.
+    ScorecardQuestion:
+      title: Questions in a scorecard
+      type: object
+      properties:
+        score:
+          type: integer
+        skill:
+          type: string
+        label:
+          type: string
+        order:
+          type: string
+    ScorecardTemplateQuestion:
+      title: Questions in a scorecard
+      type: object
+      properties:
+        skill:
+          type: string
+        label:
+          type: string
+        order:
+          type: string
+    CustomField:
+      title: Custom key value field for any document
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+    CallParticipant:
+      title: Participant invited
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        personId:
+          type: integer
+    JoinedParticipant:
+      title: Participant joined
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        personId:
+          type: integer
+    Category:
+      properties:
+        name:
+          type: string
+        occurences:
+          type: integer
+        phrases_matched:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              user_id:
+                type: string
+              name:
+                type: string
+              time:
+                type: float
+        ai_detected:
+          type: boolean
+    SummaryTopics:
+      type: object
+      properties:
+        name:
+          type: string
+        start_timestamp:
+          type: string
+        end_timestamp:
+          type: string
+        summary:
+          type: string
+    SummaryActionItems:
+      type: object
+      properties:
+        action_item:
+          type: string
+        speaker_name:
+          type: string
+        start_timestamp:
+          type: string
+        end_timestamp:
+          type: string
+    CompetitorSentiments:
+      type: object
+      properties:
+        competitor_name:
+          type: string
+        sentiment:
+          type: string
+        reasoning:
+          type: string
+        personId:
+          type: string
+        turn_start_time:
+          type: string
+
+
+  securitySchemes:
+    api_key:
+      type: apiKey
+      name: X-Api-Key
+      in: header
+    api_password:
+      type: apiKey
+      name: X-Api-Password
+      in: header

@@ -6,13 +6,15 @@ class Settings(BaseSettings):
 
     Set via environment variables or a .env file:
         CLARI_API_KEY=your-api-key
-        CLARI_BASE_URL=https://api.copilot.clari.com/v1
+        CLARI_API_PASSWORD=your-api-password
+        CLARI_BASE_URL=https://rest-api.copilot.clari.com
         SLACK_BOT_TOKEN=xoxb-...  (optional, for future Slack posting)
         SLACK_CHANNEL_ID=C0APW0L41QF  (optional)
     """
 
     clari_api_key: str = ""
-    clari_base_url: str = "https://api.copilot.clari.com/v1"
+    clari_api_password: str = ""
+    clari_base_url: str = "https://rest-api.copilot.clari.com"
 
     # Future: Slack integration
     slack_bot_token: str = ""
