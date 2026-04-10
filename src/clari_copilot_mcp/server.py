@@ -570,8 +570,29 @@ async def list_scorecards(
 
 
 def main() -> None:
-    """Run the MCP server (stdio transport for local, or SSE for hosted)."""
-    mcp.run()
+    """Run the MCP server (stdio transport for local, or SSE for hosted).
+
+    Supports CLI args for hosted deployment:
+        python -m clari_copilot_mcp.server --transport sse --port 8401 --host 0.0.0.0
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Clari Copilot MCP Server")
+    parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
+    parser.add_argument("--port", type=int, default=8401)
+    parser.add_argument("--host", default="0.0.0.0")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        # Set host/port via env vars that uvicorn picks up through FastMCP
+        os.environ.setdefault("UVICORN_HOST", args.host)
+        os.environ.setdefault("UVICORN_PORT", str(args.port))
+        os.environ.setdefault("MCP_HOST", args.host)
+        os.environ.setdefault("MCP_PORT", str(args.port))
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":
