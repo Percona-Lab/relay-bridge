@@ -42,6 +42,20 @@ LEGACY_MCP_NAMES = [
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+def _reopen_tty() -> None:
+    """Reopen stdin from /dev/tty when running via curl | python.
+
+    When the installer is piped (curl ... | python3 -), stdin is the pipe
+    and input()/getpass() hit EOF immediately. Reopening from /dev/tty
+    restores interactive prompts. This is the CAIRN doc-search pattern.
+    """
+    if not sys.stdin.isatty():
+        try:
+            sys.stdin = open("/dev/tty", "r")
+        except OSError:
+            pass  # Windows or no TTY — prompts will use defaults
+
+
 def info(msg: str) -> None:
     print(f"  {GREEN}✓{NC} {msg}")
 
@@ -86,6 +100,8 @@ def ask_yn(prompt: str, default: bool = True) -> bool:
 def ask_secret(prompt: str, default: str = "") -> str:
     display_default = " [****]" if default else ""
     try:
+        # getpass reads from /dev/tty by default on Unix, so it works
+        # even when stdin is a pipe — but we need our fallback wrapper
         value = getpass.getpass(f"  {prompt}{display_default}: ").strip()
         return value if value else default
     except (EOFError, KeyboardInterrupt):
@@ -401,6 +417,7 @@ def step_done() -> None:
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main() -> None:
+    _reopen_tty()
     step_welcome()
 
     # Install location
