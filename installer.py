@@ -488,6 +488,105 @@ def step_verify(python_path: Path) -> None:
         warn(f"Verification failed: {result.stderr.strip()}")
 
 
+def step_build_index(python_path: Path, install_dir: Path) -> None:
+    """Build the call intelligence index during local install."""
+    header("Call Intelligence Index")
+    print(f"  The index tags calls by product area, customer type, and")
+    print(f"  market signals for fast structured queries.\n")
+
+    days = ask("How many days of calls to index?", "90")
+    try:
+        days = int(days)
+    except ValueError:
+        days = 90
+
+    print(f"\n  {DIM}This fetches call details from the Clari API (~6 calls/sec).{NC}")
+    print(f"  {DIM}For 500 calls, expect ~90 seconds.{NC}\n")
+
+    if not ask_yn("Build the index now?", default=True):
+        print(f"\n  {DIM}Skipped. Build later with:{NC}")
+        print(f"  {DIM}  {python_path} -m clari_copilot_mcp.indexer --days {days}{NC}\n")
+        return
+
+    print()
+    env_vars = {"DOTENV_PATH": str(install_dir / ".env")}
+    result = subprocess.run(
+        [str(python_path), "-m", "clari_copilot_mcp.indexer", "--days", str(days)],
+        env={**os.environ, **env_vars},
+        cwd=str(install_dir),
+    )
+    if result.returncode != 0:
+        warn("Index build had issues — you can retry later with:")
+        print(f"    {DIM}{python_path} -m clari_copilot_mcp.indexer --days {days}{NC}\n")
+    else:
+        info("Index built successfully")
+
+
+def step_schedule_index(python_path: Path, install_dir: Path) -> None:
+    """Set up a cron job to refresh the index automatically."""
+    header("Automatic Index Refresh")
+    print(f"  Keep the index fresh by running an incremental update on a schedule.")
+    print(f"  This only fetches new calls since the last build.\n")
+
+    print(f"  {GREEN}1) Daily{NC} (recommended)")
+    print(f"  {YELLOW}2) Every 6 hours{NC}")
+    print(f"  {DIM}3) Every hour{NC}")
+    print(f"  {DIM}4) Skip — I'll refresh manually{NC}")
+    print()
+    choice = ask("Refresh interval", "1")
+
+    if choice == "4":
+        print(f"\n  {DIM}Refresh manually with:{NC}")
+        print(f"  {DIM}  {python_path} -m clari_copilot_mcp.indexer --days 7{NC}\n")
+        return
+
+    cron_schedules = {
+        "1": ("0 6 * * *", "daily at 6 AM"),
+        "2": ("0 */6 * * *", "every 6 hours"),
+        "3": ("0 * * * *", "every hour"),
+    }
+    cron_expr, cron_label = cron_schedules.get(choice, cron_schedules["1"])
+
+    indexer_cmd = (
+        f"cd {install_dir} && "
+        f"DOTENV_PATH={install_dir / '.env'} "
+        f"{python_path} -m clari_copilot_mcp.indexer --days 7"
+    )
+
+    # Add to user crontab
+    try:
+        # Read existing crontab
+        existing = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True
+        )
+        current_crontab = existing.stdout if existing.returncode == 0 else ""
+
+        # Remove any existing relay-bridge indexer entries
+        lines = [
+            line for line in current_crontab.splitlines()
+            if "clari_copilot_mcp.indexer" not in line
+        ]
+
+        # Add new entry
+        lines.append(f"{cron_expr}  {indexer_cmd}  # clari-copilot index refresh")
+        new_crontab = "\n".join(lines) + "\n"
+
+        proc = subprocess.run(
+            ["crontab", "-"], input=new_crontab, capture_output=True, text=True
+        )
+        if proc.returncode == 0:
+            info(f"Scheduled index refresh: {cron_label}")
+        else:
+            warn(f"Could not set crontab: {proc.stderr.strip()}")
+            print(f"  {DIM}Add manually: {cron_expr}  {indexer_cmd}{NC}")
+    except Exception as e:
+        warn(f"Could not configure cron: {e}")
+        print(f"  {DIM}Add manually to crontab:{NC}")
+        print(f"  {DIM}{cron_expr}  {indexer_cmd}{NC}")
+
+    print()
+
+
 def step_done(mode: str, any_configured: bool) -> None:
     header("Setup Complete")
     print(f"  {GREEN}{BOLD}The Clari Copilot MCP server is ready.{NC}\n")
@@ -557,6 +656,13 @@ def main() -> None:
         mcp_entry = build_mcp_entry_local(python_path, install_dir)
         any_configured = step_configure_ai_clients(mcp_entry)
         step_verify(python_path)
+
+        # Build call intelligence index
+        step_build_index(python_path, install_dir)
+
+        # Set up automatic refresh
+        step_schedule_index(python_path, install_dir)
+
         step_done("local", any_configured)
 
 
