@@ -116,37 +116,67 @@ def step_collect_credentials() -> dict[str, str]:
     print(f"  Find these in your Clari Copilot workspace:")
     print(f"  {DIM}Settings → Integrations → Clari Copilot API{NC}\n")
 
-    api_key = ask_secret("API Key")
+    api_key = ask("API Key")
     if not api_key:
         fail("API Key is required. Get it from Copilot workspace settings.")
 
-    api_password = ask_secret("API Password")
-    if not api_password:
-        fail("API Password is required. Get it from Copilot workspace settings.")
+    api_secret = ask_secret("API Secret")
+    if not api_secret:
+        fail("API Secret is required. Get it from Copilot workspace settings.")
 
     # Validate credentials
-    print(f"\n  {DIM}Validating credentials...{NC}")
+    print(f"\n  {DIM}Validating credentials against /calls endpoint...{NC}")
+    base_url = "https://rest-api.copilot.clari.com"
+    validated = False
     try:
         import urllib.request
         import urllib.error
 
-        req = urllib.request.Request(
-            "https://rest-api.copilot.clari.com/users",
-            headers={
-                "X-Api-Key": api_key,
-                "X-Api-Password": api_password,
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            user_count = len(data.get("users", []))
-            info(f"Credentials valid — {user_count} users found in workspace")
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            fail(f"Authentication failed (HTTP {e.code}). Check your API key and password.")
-        else:
-            warn(f"Could not validate (HTTP {e.code}) — continuing anyway")
+        # Try /calls with a minimal request first (more likely to succeed than /users)
+        for endpoint in ["/calls?limit=1&includePagination=false", "/users"]:
+            try:
+                req = urllib.request.Request(
+                    f"{base_url}{endpoint}",
+                    headers={
+                        "X-Api-Key": api_key,
+                        "X-Api-Password": api_secret,
+                        "Accept": "application/json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read())
+                    if "calls" in data:
+                        call_count = len(data.get("calls", []))
+                        info(f"Credentials valid — API returned {call_count} call(s)")
+                    elif "users" in data:
+                        user_count = len(data.get("users", []))
+                        info(f"Credentials valid — {user_count} users found")
+                    else:
+                        info(f"Credentials valid — API responded OK")
+                    validated = True
+                    break
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    pass
+                if e.code in (401, 403):
+                    warn(f"HTTP {e.code} on {endpoint}: {body or 'no details'}")
+                    continue  # Try next endpoint
+                else:
+                    warn(f"HTTP {e.code} on {endpoint}: {body or 'no details'}")
+                    continue
+
+        if not validated:
+            print()
+            warn(f"Could not validate credentials (got 401/403 on all endpoints).")
+            print(f"\n  {DIM}Debug: try this curl command manually:{NC}")
+            print(f'  curl -v -H "X-Api-Key:{api_key[:8]}..." -H "X-Api-Password:****" \\')
+            print(f'    "{base_url}/calls?limit=1"\n')
+            if not ask_yn("Continue anyway with these credentials?", default=True):
+                fail("Aborted. Check credentials and try again.")
+
     except Exception as e:
         warn(f"Could not validate ({e}) — continuing anyway")
 
