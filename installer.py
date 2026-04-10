@@ -114,75 +114,64 @@ def step_welcome() -> None:
 def step_collect_credentials() -> dict[str, str]:
     header("Clari Copilot API Credentials")
     print(f"  Find these in your Clari Copilot workspace:")
-    print(f"  {DIM}Settings → Integrations → Clari Copilot API{NC}\n")
+    print(f"  {DIM}Settings → Integrations → Clari Copilot API{NC}")
+    print(f"  {DIM}Use the clipboard icon to copy each value.{NC}\n")
 
-    api_key = ask("API Key")
+    api_key = ask("API Key").strip()
     if not api_key:
         fail("API Key is required. Get it from Copilot workspace settings.")
 
-    api_secret = ask_secret("API Secret")
+    api_secret = ask_secret("API Secret").strip()
     if not api_secret:
         fail("API Secret is required. Get it from Copilot workspace settings.")
 
+    # Show what we captured (masked) so user can spot issues
+    print(f"\n  {DIM}Key:    {api_key[:6]}...{api_key[-4:]} ({len(api_key)} chars){NC}")
+    print(f"  {DIM}Secret: {'*' * 6}...{api_secret[-4:]} ({len(api_secret)} chars){NC}")
+
     # Validate credentials
-    print(f"\n  {DIM}Validating credentials against /calls endpoint...{NC}")
+    print(f"\n  {DIM}Validating...{NC}")
     base_url = "https://rest-api.copilot.clari.com"
     validated = False
     try:
         import urllib.request
         import urllib.error
 
-        # Try /calls with a minimal request first (more likely to succeed than /users)
-        for endpoint in ["/calls?limit=1&includePagination=false", "/users"]:
-            try:
-                req = urllib.request.Request(
-                    f"{base_url}{endpoint}",
-                    headers={
-                        "X-Api-Key": api_key,
-                        "X-Api-Password": api_secret,
-                        "Accept": "application/json",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    data = json.loads(resp.read())
-                    if "calls" in data:
-                        call_count = len(data.get("calls", []))
-                        info(f"Credentials valid — API returned {call_count} call(s)")
-                    elif "users" in data:
-                        user_count = len(data.get("users", []))
-                        info(f"Credentials valid — {user_count} users found")
-                    else:
-                        info(f"Credentials valid — API responded OK")
-                    validated = True
-                    break
-            except urllib.error.HTTPError as e:
-                body = ""
-                try:
-                    body = e.read().decode("utf-8", errors="replace")[:200]
-                except Exception:
-                    pass
-                if e.code in (401, 403):
-                    warn(f"HTTP {e.code} on {endpoint}: {body or 'no details'}")
-                    continue  # Try next endpoint
-                else:
-                    warn(f"HTTP {e.code} on {endpoint}: {body or 'no details'}")
-                    continue
+        req = urllib.request.Request(
+            f"{base_url}/calls?limit=1&includePagination=false",
+            headers={
+                "X-Api-Key": api_key,
+                "X-Api-Password": api_secret,
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            calls = data.get("calls", [])
+            info(f"Connected — API returned data successfully")
+            validated = True
 
-        if not validated:
-            print()
-            warn(f"Could not validate credentials (got 401/403 on all endpoints).")
-            print(f"\n  {DIM}Debug: try this curl command manually:{NC}")
-            print(f'  curl -v -H "X-Api-Key:{api_key[:8]}..." -H "X-Api-Password:****" \\')
-            print(f'    "{base_url}/calls?limit=1"\n')
-            if not ask_yn("Continue anyway with these credentials?", default=True):
-                fail("Aborted. Check credentials and try again.")
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        print()
+        warn(f"HTTP {e.code}: {body or 'Forbidden'}")
+        print(f"\n  {DIM}Troubleshooting:{NC}")
+        print(f"  {DIM}1. Copy the API Key using the clipboard icon (not by selecting text){NC}")
+        print(f"  {DIM}2. Click the eye icon to reveal the API Secret, then copy it{NC}")
+        print(f"  {DIM}3. Make sure there are no extra spaces or newlines{NC}\n")
+        if not ask_yn("Continue anyway with these credentials?", default=True):
+            fail("Aborted. Fix credentials and re-run the installer.")
 
     except Exception as e:
         warn(f"Could not validate ({e}) — continuing anyway")
 
     return {
         "CLARI_API_KEY": api_key,
-        "CLARI_API_PASSWORD": api_password,
+        "CLARI_API_PASSWORD": api_secret,
         "CLARI_BASE_URL": "https://rest-api.copilot.clari.com",
     }
 
