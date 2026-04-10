@@ -333,27 +333,52 @@ def step_write_env(install_dir: Path, env: dict[str, str]) -> Path:
     return env_path
 
 
-def step_configure_claude_code(install_dir: Path, python_path: Path) -> bool:
-    header("Claude Code Configuration")
-
-    settings_path = Path.home() / ".claude" / "settings.json"
-
-    if not settings_path.parent.exists():
-        if not ask_yn("Claude Code config dir not found. Create it?", default=True):
-            warn("Skipping Claude Code configuration")
+def _configure_json_file(
+    config_path: Path,
+    mcp_entry: dict,
+    label: str,
+    add_permissions: bool = False,
+) -> bool:
+    """Add the MCP server entry to a JSON config file."""
+    if not config_path.parent.exists():
+        if not ask_yn(f"{label} config dir not found. Create it?", default=True):
+            warn(f"Skipping {label} configuration")
             return False
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load existing config
     config: dict = {}
-    if settings_path.exists():
+    if config_path.exists():
         try:
-            config = json.loads(settings_path.read_text())
+            config = json.loads(config_path.read_text())
         except json.JSONDecodeError:
-            warn(f"Could not parse {settings_path} — will merge carefully")
+            warn(f"Could not parse {config_path} — will merge carefully")
             config = {}
 
-    # Build MCP entry
+    config.setdefault("mcpServers", {})
+
+    # Remove legacy entries
+    for name in LEGACY_MCP_NAMES:
+        config["mcpServers"].pop(name, None)
+
+    # Add the active entry
+    config["mcpServers"][MCP_SERVER_NAME] = mcp_entry
+
+    # Add permission auto-allow (Claude Code settings.json only)
+    if add_permissions:
+        config.setdefault("permissions", {})
+        config["permissions"].setdefault("allow", [])
+        perm = f"mcp__{MCP_SERVER_NAME}__*"
+        if perm not in config["permissions"]["allow"]:
+            config["permissions"]["allow"].append(perm)
+
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    info(f"Configured {label}: {config_path}")
+    return True
+
+
+def step_configure_ai_clients(install_dir: Path, python_path: Path) -> bool:
+    header("AI Client Configuration")
+
     mcp_entry = {
         "command": str(python_path),
         "args": ["-m", "clari_copilot_mcp.server"],
@@ -362,27 +387,39 @@ def step_configure_claude_code(install_dir: Path, python_path: Path) -> bool:
         },
     }
 
-    config.setdefault("mcpServers", {})
+    any_configured = False
 
-    # Remove any legacy entries (cleanup may have already done this,
-    # but be safe in case cleanup was skipped)
-    for name in LEGACY_MCP_NAMES:
-        config["mcpServers"].pop(name, None)
+    # 1. Claude Code — ~/.claude/settings.json
+    code_path = Path.home() / ".claude" / "settings.json"
+    if code_path.parent.exists():
+        info("Claude Code detected")
+        if _configure_json_file(code_path, mcp_entry, "Claude Code", add_permissions=True):
+            any_configured = True
+    else:
+        print(f"  {DIM}Claude Code not detected ({code_path.parent}){NC}")
+        if ask_yn("Configure Claude Code anyway?", default=False):
+            if _configure_json_file(code_path, mcp_entry, "Claude Code", add_permissions=True):
+                any_configured = True
 
-    # Add the active entry
-    config["mcpServers"][MCP_SERVER_NAME] = mcp_entry
+    # 2. Claude Desktop — ~/Library/Application Support/Claude/claude_desktop_config.json
+    if platform.system() == "Darwin":
+        desktop_path = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    elif platform.system() == "Windows":
+        desktop_path = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
+    else:
+        desktop_path = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
 
-    # Add permission auto-allow
-    config.setdefault("permissions", {})
-    config["permissions"].setdefault("allow", [])
-    perm = f"mcp__{MCP_SERVER_NAME}__*"
-    if perm not in config["permissions"]["allow"]:
-        config["permissions"]["allow"].append(perm)
+    if desktop_path.parent.exists():
+        info("Claude Desktop detected")
+        if _configure_json_file(desktop_path, mcp_entry, "Claude Desktop"):
+            any_configured = True
+    else:
+        print(f"  {DIM}Claude Desktop not detected ({desktop_path.parent}){NC}")
 
-    settings_path.write_text(json.dumps(config, indent=2) + "\n")
-    info(f"Configured Claude Code: {settings_path}")
-    info(f"MCP server name: {BOLD}{MCP_SERVER_NAME}{NC}")
-    return True
+    if any_configured:
+        info(f"MCP server name: {BOLD}{MCP_SERVER_NAME}{NC}")
+
+    return any_configured
 
 
 def step_verify(python_path: Path) -> None:
@@ -436,8 +473,8 @@ def main() -> None:
     # Write .env
     step_write_env(install_dir, env)
 
-    # Configure Claude Code
-    step_configure_claude_code(install_dir, python_path)
+    # Configure AI clients (Claude Code + Claude Desktop)
+    step_configure_ai_clients(install_dir, python_path)
 
     # Verify
     step_verify(python_path)
