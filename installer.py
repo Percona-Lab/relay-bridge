@@ -138,14 +138,29 @@ def step_cleanup_previous(install_dir: Path) -> None:
     """Detect and remove previous installations."""
     header("Checking for Previous Installation")
 
-    settings_path = Path.home() / ".claude" / "settings.json"
     found_previous = False
     old_dirs: list[Path] = []
 
-    # 1. Check Claude Code settings for old MCP entries
-    if settings_path.exists():
+    # 1. Check both AI client configs for old MCP entries
+    config_files: list[tuple[Path, str]] = [
+        (Path.home() / ".claude" / "settings.json", "Claude Code"),
+    ]
+    if platform.system() == "Darwin":
+        config_files.append((
+            Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+            "Claude Desktop",
+        ))
+    elif platform.system() == "Windows":
+        config_files.append((
+            Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json",
+            "Claude Desktop",
+        ))
+
+    for cfg_path, cfg_label in config_files:
+        if not cfg_path.exists():
+            continue
         try:
-            config = json.loads(settings_path.read_text())
+            config = json.loads(cfg_path.read_text())
             servers = config.get("mcpServers", {})
             for name in LEGACY_MCP_NAMES:
                 if name in servers:
@@ -164,10 +179,11 @@ def step_cleanup_previous(install_dir: Path) -> None:
                             old_dir = Path(*p.parts[:idx])
 
                     found_previous = True
-                    info(f"Found existing MCP entry: {BOLD}{name}{NC}")
+                    info(f"Found existing MCP entry: {BOLD}{name}{NC} ({cfg_label})")
                     if old_dir and old_dir.exists() and old_dir != install_dir:
-                        print(f"    {DIM}Directory: {old_dir}{NC}")
-                        old_dirs.append(old_dir)
+                        if old_dir not in old_dirs:
+                            print(f"    {DIM}Directory: {old_dir}{NC}")
+                            old_dirs.append(old_dir)
 
         except (json.JSONDecodeError, Exception):
             pass
@@ -202,10 +218,12 @@ def step_cleanup_previous(install_dir: Path) -> None:
             shutil.rmtree(str(d))
             info(f"Removed: {d}")
 
-    # 4. Clean up old MCP entries from settings.json (will be re-added later)
-    if settings_path.exists():
+    # 4. Clean up old MCP entries from all config files (will be re-added later)
+    for cfg_path, cfg_label in config_files:
+        if not cfg_path.exists():
+            continue
         try:
-            config = json.loads(settings_path.read_text())
+            config = json.loads(cfg_path.read_text())
             servers = config.get("mcpServers", {})
             removed = []
             for name in LEGACY_MCP_NAMES:
@@ -213,8 +231,8 @@ def step_cleanup_previous(install_dir: Path) -> None:
                     del servers[name]
                     removed.append(name)
             if removed:
-                settings_path.write_text(json.dumps(config, indent=2) + "\n")
-                info(f"Removed old MCP entries: {', '.join(removed)}")
+                cfg_path.write_text(json.dumps(config, indent=2) + "\n")
+                info(f"Removed old MCP entries from {cfg_label}: {', '.join(removed)}")
         except (json.JSONDecodeError, Exception):
             pass
 
