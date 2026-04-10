@@ -1,3 +1,23 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# CAIRN DOTENV_PATH pattern: load .env from the path specified in the
+# DOTENV_PATH env var, falling back to cwd/.env or package-relative .env.
+_pkg_dir = Path(__file__).resolve().parent.parent.parent
+_dotenv_path = os.getenv("DOTENV_PATH", "")
+
+if _dotenv_path and Path(_dotenv_path).is_file():
+    load_dotenv(Path(_dotenv_path))
+else:
+    for _candidate in [Path.cwd() / ".env", _pkg_dir / ".env"]:
+        if _candidate.is_file():
+            load_dotenv(_candidate)
+            break
+    else:
+        load_dotenv()
+
 from pydantic_settings import BaseSettings
 
 
@@ -8,8 +28,6 @@ class Settings(BaseSettings):
         CLARI_API_KEY=your-api-key
         CLARI_API_PASSWORD=your-api-password
         CLARI_BASE_URL=https://rest-api.copilot.clari.com
-        SLACK_BOT_TOKEN=xoxb-...  (optional, for future Slack posting)
-        SLACK_CHANNEL_ID=C0APW0L41QF  (optional)
     """
 
     clari_api_key: str = ""
@@ -19,5 +37,3 @@ class Settings(BaseSettings):
     # Future: Slack integration
     slack_bot_token: str = ""
     slack_channel_id: str = "C0APW0L41QF"
-
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
