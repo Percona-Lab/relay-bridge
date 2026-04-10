@@ -31,6 +31,14 @@ REPO_URL = "https://github.com/Percona-Lab/relay-bridge.git"
 DEFAULT_INSTALL_DIR = Path.home() / "relay-bridge"
 MCP_SERVER_NAME = "clari-copilot"
 
+# Names to look for when cleaning up previous installations
+LEGACY_MCP_NAMES = [
+    "clari-copilot",
+    "DISABLED-clari-copilot",
+    "relay-bridge",
+    "DISABLED-relay-bridge",
+]
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -93,7 +101,6 @@ def find_uv() -> str | None:
     uv = shutil.which("uv")
     if uv:
         return uv
-    # Common install locations
     for p in [Path.home() / ".local" / "bin" / "uv", Path.home() / ".cargo" / "bin" / "uv"]:
         if p.exists():
             return str(p)
@@ -109,6 +116,91 @@ def step_welcome() -> None:
     print(f"  conversation intelligence data.\n")
     print(f"  {DIM}Repo: {REPO_URL}{NC}")
     print(f"  {DIM}API docs: https://api-doc.copilot.clari.com{NC}\n")
+
+
+def step_cleanup_previous(install_dir: Path) -> None:
+    """Detect and remove previous installations."""
+    header("Checking for Previous Installation")
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    found_previous = False
+    old_dirs: list[Path] = []
+
+    # 1. Check Claude Code settings for old MCP entries
+    if settings_path.exists():
+        try:
+            config = json.loads(settings_path.read_text())
+            servers = config.get("mcpServers", {})
+            for name in LEGACY_MCP_NAMES:
+                if name in servers:
+                    entry = servers[name]
+                    # Extract the old install dir from the command or env
+                    cmd = entry.get("command", "")
+                    env_path = entry.get("env", {}).get("DOTENV_PATH", "")
+                    old_dir = None
+                    if env_path:
+                        old_dir = Path(env_path).parent
+                    elif cmd:
+                        # command is like /path/to/.venv/bin/python
+                        p = Path(cmd)
+                        if ".venv" in p.parts:
+                            idx = p.parts.index(".venv")
+                            old_dir = Path(*p.parts[:idx])
+
+                    found_previous = True
+                    info(f"Found existing MCP entry: {BOLD}{name}{NC}")
+                    if old_dir and old_dir.exists() and old_dir != install_dir:
+                        print(f"    {DIM}Directory: {old_dir}{NC}")
+                        old_dirs.append(old_dir)
+
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    # 2. Check common install locations
+    for candidate in [
+        Path.home() / "relay-bridge",
+        Path.home() / "Playground" / "clari-copilot-mcp",
+        Path.home() / "clari-copilot-mcp",
+    ]:
+        if candidate.exists() and candidate != install_dir and candidate not in old_dirs:
+            if (candidate / "src" / "clari_copilot_mcp").exists() or (candidate / "spec.yaml").exists():
+                found_previous = True
+                info(f"Found previous install at: {candidate}")
+                old_dirs.append(candidate)
+
+    if not found_previous:
+        info("No previous installation found — clean install")
+        return
+
+    # 3. Offer to clean up
+    print()
+    if old_dirs and ask_yn("Remove old installation directories?", default=True):
+        for d in old_dirs:
+            # Preserve .env if it exists (in case user wants to recover creds)
+            old_env = d / ".env"
+            if old_env.exists():
+                backup = d.parent / f".env.{d.name}.backup"
+                shutil.copy2(str(old_env), str(backup))
+                info(f"Backed up credentials: {backup}")
+
+            shutil.rmtree(str(d))
+            info(f"Removed: {d}")
+
+    # 4. Clean up old MCP entries from settings.json (will be re-added later)
+    if settings_path.exists():
+        try:
+            config = json.loads(settings_path.read_text())
+            servers = config.get("mcpServers", {})
+            removed = []
+            for name in LEGACY_MCP_NAMES:
+                if name in servers:
+                    del servers[name]
+                    removed.append(name)
+            if removed:
+                settings_path.write_text(json.dumps(config, indent=2) + "\n")
+                info(f"Removed old MCP entries: {', '.join(removed)}")
+        except (json.JSONDecodeError, Exception):
+            pass
 
 
 def step_collect_credentials() -> dict[str, str]:
@@ -132,7 +224,6 @@ def step_collect_credentials() -> dict[str, str]:
     # Validate credentials
     print(f"\n  {DIM}Validating...{NC}")
     base_url = "https://rest-api.copilot.clari.com"
-    validated = False
     try:
         import urllib.request
         import urllib.error
@@ -147,9 +238,7 @@ def step_collect_credentials() -> dict[str, str]:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-            calls = data.get("calls", [])
             info(f"Connected — API returned data successfully")
-            validated = True
 
     except urllib.error.HTTPError as e:
         body = ""
@@ -172,7 +261,7 @@ def step_collect_credentials() -> dict[str, str]:
     return {
         "CLARI_API_KEY": api_key,
         "CLARI_API_PASSWORD": api_secret,
-        "CLARI_BASE_URL": "https://rest-api.copilot.clari.com",
+        "CLARI_BASE_URL": base_url,
     }
 
 
@@ -259,8 +348,12 @@ def step_configure_claude_code(install_dir: Path, python_path: Path) -> bool:
 
     config.setdefault("mcpServers", {})
 
-    # Remove DISABLED version if present
-    config["mcpServers"].pop(f"DISABLED-{MCP_SERVER_NAME}", None)
+    # Remove any legacy entries (cleanup may have already done this,
+    # but be safe in case cleanup was skipped)
+    for name in LEGACY_MCP_NAMES:
+        config["mcpServers"].pop(name, None)
+
+    # Add the active entry
     config["mcpServers"][MCP_SERVER_NAME] = mcp_entry
 
     # Add permission auto-allow
@@ -281,9 +374,11 @@ def step_verify(python_path: Path) -> None:
 
     result = run([
         str(python_path), "-c",
-        "from clari_copilot_mcp.server import mcp; "
-        "tools = list(mcp._tool_manager._tools.keys()); "
-        "print(f'{len(tools)} tools: {', '.join(tools)}')"
+        (
+            "from clari_copilot_mcp.server import mcp; "
+            "tools = list(mcp._tool_manager._tools.keys()); "
+            "print(f'{len(tools)} tools loaded: ' + ', '.join(tools))"
+        ),
     ])
 
     if result.returncode == 0:
@@ -311,6 +406,9 @@ def main() -> None:
     # Install location
     install_dir = Path(ask("Install directory", str(DEFAULT_INSTALL_DIR)))
     install_dir = install_dir.expanduser().resolve()
+
+    # Clean up previous installations
+    step_cleanup_previous(install_dir)
 
     # Credentials
     env = step_collect_credentials()
