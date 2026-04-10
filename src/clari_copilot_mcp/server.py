@@ -727,11 +727,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.transport == "sse":
-        # Set host/port via env vars that uvicorn picks up through FastMCP
-        os.environ.setdefault("UVICORN_HOST", args.host)
-        os.environ.setdefault("UVICORN_PORT", str(args.port))
-        os.environ.setdefault("MCP_HOST", args.host)
-        os.environ.setdefault("MCP_PORT", str(args.port))
+        from mcp.server.transport_security import TransportSecuritySettings
+        # Disable DNS rebinding protection — server is behind VPN
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
         mcp.settings.host = args.host
         mcp.settings.port = args.port
 
