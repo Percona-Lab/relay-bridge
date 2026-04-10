@@ -3,6 +3,10 @@
 Exposes Clari Copilot call data (transcripts, summaries, metadata)
 as MCP tools for querying by Claude Code, SHERPA, or other AI agents.
 
+Supports two modes:
+  - Local: credentials in .env, queries the Clari API directly
+  - Remote proxy: forwards tool calls to a shared SSE server (VPN required)
+
 API docs: https://api-doc.copilot.clari.com
 Base URL: https://rest-api.copilot.clari.com
 Auth: X-Api-Key + X-Api-Password headers
@@ -11,15 +15,14 @@ Auth: X-Api-Key + X-Api-Password headers
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, timedelta
 
 from mcp.server.fastmcp import FastMCP
 
-from .client import ClariCopilotClient
 from .config import Settings
 
 settings = Settings()
-client = ClariCopilotClient(settings)
 
 mcp = FastMCP(
     "Clari Copilot",
@@ -34,6 +37,100 @@ mcp = FastMCP(
 
 def _json(obj: object) -> str:
     return json.dumps(obj, indent=2, default=str)
+
+
+# ── Local mode detection ───────────────────────────────────────────
+# Local mode is enabled when API credentials are configured.
+
+def _local_enabled() -> bool:
+    return bool(settings.clari_api_key)
+
+
+_client = None
+
+
+def _client_instance():
+    global _client
+    if _client is None:
+        from .client import ClariCopilotClient
+        _client = ClariCopilotClient(settings)
+    return _client
+
+
+# ── Remote proxy mode ──────────────────────────────────────────────
+# When REMOTE_SSE_URL is set, tool calls are forwarded to a remote MCP
+# server via SSE. This lets the server start instantly (tools register)
+# even when off VPN — connection is attempted lazily per tool call.
+
+_REMOTE_SSE_URL = os.getenv("REMOTE_SSE_URL")
+
+_VPN_REQUIRED_MSG = (
+    "**Cannot reach the Clari Copilot data server.** Connect to Percona VPN and try again.\n\n"
+    "The MCP is configured in remote mode — it connects to a shared server "
+    "that is only accessible on the Percona internal network.\n\n"
+    "_If you need offline access, re-run the installer and choose Local mode "
+    "with your own Clari Copilot API credentials._"
+)
+
+_NOT_CONFIGURED_MSG = (
+    "**Clari Copilot not configured.** Run the installer to set up the data connection:\n"
+    "```\n"
+    "curl -fsSL https://raw.githubusercontent.com/Percona-Lab/relay-bridge/main/installer.py | python3 -\n"
+    "```\n"
+    "Choose Remote (default) for VPN access, or Local if you have your own API credentials.\n"
+    "See https://github.com/Percona-Lab/relay-bridge for details."
+)
+
+
+def _friendly_error(source: str, e: Exception) -> str:
+    """Return a user-friendly error message based on exception type."""
+    etype = type(e).__name__
+    msg = str(e)
+    if "ConnectionError" in etype or "ConnectionTimeout" in etype or "timed out" in msg.lower():
+        return (
+            f"**{source} connection failed.** Cannot reach the server.\n\n"
+            f"**If using the remote server (recommended setup):** Connect to Percona VPN and try again.\n"
+            f"**If running locally with your own credentials:** Check that the base URL in your .env file is correct "
+            f"and reachable from your network.\n\n"
+            f"_Technical detail: {etype}: {msg}_"
+        )
+    if "Authentication" in etype or "401" in msg or "403" in msg:
+        return (
+            f"**{source} authentication failed.** Your credentials are incorrect or expired. "
+            f"Check the API key and password in your .env file. "
+            f"If you don't have credentials, switch to the remote server instead — "
+            f"no credentials needed, just VPN. See https://github.com/Percona-Lab/relay-bridge\n\n"
+            f"_Technical detail: {etype}: {msg}_"
+        )
+    return f"**{source} query failed:** {etype}: {msg}"
+
+
+async def _call_remote(tool_name: str, arguments: dict) -> str:
+    """Forward a tool call to the remote MCP server via SSE."""
+    from mcp.client.sse import sse_client
+    from mcp import ClientSession
+
+    try:
+        async with sse_client(url=_REMOTE_SSE_URL) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments)
+                if result.content:
+                    parts = [
+                        block.text for block in result.content
+                        if hasattr(block, "text")
+                    ]
+                    return "\n".join(parts) if parts else "No results."
+                return "No results returned."
+    except Exception as e:
+        msg = str(e).lower()
+        if any(k in msg for k in [
+            "nodename", "connecterror", "connect error",
+            "timed out", "connection refused", "unreachable",
+            "name or service not known", "no route to host",
+        ]):
+            return _VPN_REQUIRED_MSG
+        return f"**Remote query failed:** {type(e).__name__}: {e}"
 
 
 # ------------------------------------------------------------------
@@ -73,19 +170,41 @@ async def list_calls(
         filter_duration_lt: Only calls shorter than N seconds.
         sort_time: Sort by call time: "asc" or "desc" (default desc = newest first).
     """
-    result = await client.list_calls(
-        skip=skip,
-        limit=limit,
-        filter_time_gt=filter_time_gt,
-        filter_time_lt=filter_time_lt,
-        filter_user=[filter_user] if filter_user else None,
-        filter_topics=[filter_topics] if filter_topics else None,
-        filter_type=[filter_type] if filter_type else None,
-        filter_duration_gt=filter_duration_gt,
-        filter_duration_lt=filter_duration_lt,
-        sort_time=sort_time,
-    )
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            args = {"skip": skip, "limit": limit, "sort_time": sort_time}
+            if filter_time_gt:
+                args["filter_time_gt"] = filter_time_gt
+            if filter_time_lt:
+                args["filter_time_lt"] = filter_time_lt
+            if filter_user:
+                args["filter_user"] = filter_user
+            if filter_topics:
+                args["filter_topics"] = filter_topics
+            if filter_type:
+                args["filter_type"] = filter_type
+            if filter_duration_gt is not None:
+                args["filter_duration_gt"] = filter_duration_gt
+            if filter_duration_lt is not None:
+                args["filter_duration_lt"] = filter_duration_lt
+            return await _call_remote("list_calls", args)
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().list_calls(
+            skip=skip,
+            limit=limit,
+            filter_time_gt=filter_time_gt,
+            filter_time_lt=filter_time_lt,
+            filter_user=[filter_user] if filter_user else None,
+            filter_topics=[filter_topics] if filter_topics else None,
+            filter_type=[filter_type] if filter_type else None,
+            filter_duration_gt=filter_duration_gt,
+            filter_duration_lt=filter_duration_lt,
+            sort_time=sort_time,
+        )
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -102,8 +221,18 @@ async def get_call_details(call_id: str, include_audio: bool = False) -> str:
         call_id: The call ID (from list_calls results).
         include_audio: If true, include a signed audio URL (valid 4 hours).
     """
-    result = await client.get_call_details(call_id, include_audio=include_audio)
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            args = {"call_id": call_id}
+            if include_audio:
+                args["include_audio"] = include_audio
+            return await _call_remote("get_call_details", args)
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_call_details(call_id, include_audio=include_audio)
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -116,16 +245,23 @@ async def get_transcript(call_id: str) -> str:
     Args:
         call_id: The call ID (from list_calls results).
     """
-    result = await client.get_call_details(call_id)
-    call = result.get("call", result)
-    transcript = call.get("transcript", [])
-    title = call.get("title", "Unknown")
-    return _json({
-        "call_id": call_id,
-        "title": title,
-        "utterance_count": len(transcript),
-        "transcript": transcript,
-    })
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_transcript", {"call_id": call_id})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_call_details(call_id)
+        call = result.get("call", result)
+        transcript = call.get("transcript", [])
+        title = call.get("title", "Unknown")
+        return _json({
+            "call_id": call_id,
+            "title": title,
+            "utterance_count": len(transcript),
+            "transcript": transcript,
+        })
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -141,14 +277,21 @@ async def get_summary(call_id: str) -> str:
     Args:
         call_id: The call ID (from list_calls results).
     """
-    result = await client.get_call_details(call_id)
-    call = result.get("call", result)
-    return _json({
-        "call_id": call_id,
-        "title": call.get("title", "Unknown"),
-        "summary": call.get("summary", {}),
-        "competitor_sentiments": call.get("competitor_sentiments", []),
-    })
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_summary", {"call_id": call_id})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_call_details(call_id)
+        call = result.get("call", result)
+        return _json({
+            "call_id": call_id,
+            "title": call.get("title", "Unknown"),
+            "summary": call.get("summary", {}),
+            "competitor_sentiments": call.get("competitor_sentiments", []),
+        })
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -167,57 +310,66 @@ async def get_recent_summaries(
         limit: Max calls to process (default 50).
         filter_duration_gt: Only include calls longer than N seconds (default 120 = 2 min, to skip short/failed calls).
     """
-    to_dt = date.today()
-    from_dt = to_dt - timedelta(days=days)
-
-    calls_result = await client.list_calls(
-        filter_time_gt=f"{from_dt}T00:00:00Z",
-        filter_time_lt=f"{to_dt}T23:59:59Z",
-        filter_duration_gt=filter_duration_gt,
-        limit=min(limit, 100),
-        sort_time="desc",
-        include_pagination=True,
-    )
-
-    calls = calls_result.get("calls", [])
-    summaries = []
-
-    for call in calls:
-        call_id = call.get("id", "")
-        if not call_id:
-            continue
-        try:
-            details = await client.get_call_details(call_id)
-            detail_call = details.get("call", details)
-            summaries.append({
-                "call_id": call_id,
-                "title": call.get("title", "Unknown"),
-                "time": call.get("time", ""),
-                "duration_sec": call.get("metrics", {}).get("call_duration", ""),
-                "users": [u.get("userEmail", "") for u in call.get("users", [])],
-                "external_participants": [
-                    p.get("name", p.get("email", ""))
-                    for p in call.get("externalParticipants", [])
-                ],
-                "deal_name": call.get("deal_name", ""),
-                "account_name": call.get("account_name", ""),
-                "summary": detail_call.get("summary", {}),
-                "competitor_sentiments": detail_call.get("competitor_sentiments", []),
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_recent_summaries", {
+                "days": days, "limit": limit, "filter_duration_gt": filter_duration_gt,
             })
-        except Exception as e:
-            summaries.append({
-                "call_id": call_id,
-                "title": call.get("title", "Unknown"),
-                "error": str(e),
-            })
+        return _NOT_CONFIGURED_MSG
+    try:
+        to_dt = date.today()
+        from_dt = to_dt - timedelta(days=days)
 
-    return _json({
-        "period": f"{from_dt} to {to_dt}",
-        "total_calls_found": len(calls),
-        "summaries_retrieved": len([s for s in summaries if "summary" in s]),
-        "pagination": calls_result.get("pagination", {}),
-        "results": summaries,
-    })
+        calls_result = await _client_instance().list_calls(
+            filter_time_gt=f"{from_dt}T00:00:00Z",
+            filter_time_lt=f"{to_dt}T23:59:59Z",
+            filter_duration_gt=filter_duration_gt,
+            limit=min(limit, 100),
+            sort_time="desc",
+            include_pagination=True,
+        )
+
+        calls = calls_result.get("calls", [])
+        summaries = []
+
+        for call in calls:
+            call_id = call.get("id", "")
+            if not call_id:
+                continue
+            try:
+                details = await _client_instance().get_call_details(call_id)
+                detail_call = details.get("call", details)
+                summaries.append({
+                    "call_id": call_id,
+                    "title": call.get("title", "Unknown"),
+                    "time": call.get("time", ""),
+                    "duration_sec": call.get("metrics", {}).get("call_duration", ""),
+                    "users": [u.get("userEmail", "") for u in call.get("users", [])],
+                    "external_participants": [
+                        p.get("name", p.get("email", ""))
+                        for p in call.get("externalParticipants", [])
+                    ],
+                    "deal_name": call.get("deal_name", ""),
+                    "account_name": call.get("account_name", ""),
+                    "summary": detail_call.get("summary", {}),
+                    "competitor_sentiments": detail_call.get("competitor_sentiments", []),
+                })
+            except Exception as e:
+                summaries.append({
+                    "call_id": call_id,
+                    "title": call.get("title", "Unknown"),
+                    "error": str(e),
+                })
+
+        return _json({
+            "period": f"{from_dt} to {to_dt}",
+            "total_calls_found": len(calls),
+            "summaries_retrieved": len([s for s in summaries if "summary" in s]),
+            "pagination": calls_result.get("pagination", {}),
+            "results": summaries,
+        })
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 # ------------------------------------------------------------------
@@ -241,32 +393,41 @@ async def search_calls(
         days: Number of days to look back (default 30).
         limit: Max calls to scan (default 100).
     """
-    to_dt = date.today()
-    from_dt = to_dt - timedelta(days=days)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("search_calls", {
+                "query": query, "days": days, "limit": limit,
+            })
+        return _NOT_CONFIGURED_MSG
+    try:
+        to_dt = date.today()
+        from_dt = to_dt - timedelta(days=days)
 
-    result = await client.list_calls(
-        filter_time_gt=f"{from_dt}T00:00:00Z",
-        filter_time_lt=f"{to_dt}T23:59:59Z",
-        limit=min(limit, 100),
-        sort_time="desc",
-        include_pagination=False,
-    )
+        result = await _client_instance().list_calls(
+            filter_time_gt=f"{from_dt}T00:00:00Z",
+            filter_time_lt=f"{to_dt}T23:59:59Z",
+            limit=min(limit, 100),
+            sort_time="desc",
+            include_pagination=False,
+        )
 
-    query_lower = query.lower()
-    calls = result.get("calls", [])
-    matched = []
-    for call in calls:
-        searchable = json.dumps(call).lower()
-        if query_lower in searchable:
-            matched.append(call)
+        query_lower = query.lower()
+        calls = result.get("calls", [])
+        matched = []
+        for call in calls:
+            searchable = json.dumps(call).lower()
+            if query_lower in searchable:
+                matched.append(call)
 
-    return _json({
-        "query": query,
-        "period": f"{from_dt} to {to_dt}",
-        "scanned": len(calls),
-        "matches": len(matched),
-        "calls": matched,
-    })
+        return _json({
+            "query": query,
+            "period": f"{from_dt} to {to_dt}",
+            "scanned": len(calls),
+            "matches": len(matched),
+            "calls": matched,
+        })
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 # ------------------------------------------------------------------
@@ -281,8 +442,15 @@ async def list_users() -> str:
     Returns user id, email, name, role (REP/MANAGER/OBSERVER),
     recording status, and manager_id.
     """
-    result = await client.list_users()
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("list_users", {})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().list_users()
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -293,8 +461,15 @@ async def list_topics() -> str:
     Use topic names with list_calls(filter_topics=...) to find
     calls where specific topics were discussed.
     """
-    result = await client.list_topics_v2()
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("list_topics", {})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().list_topics_v2()
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 # ------------------------------------------------------------------
@@ -312,8 +487,15 @@ async def get_deal(deal_id: str) -> str:
     Args:
         deal_id: The source CRM deal/opportunity ID.
     """
-    result = await client.get_deal(deal_id)
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_deal", {"deal_id": deal_id})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_deal(deal_id)
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -323,8 +505,15 @@ async def get_account(account_id: str) -> str:
     Args:
         account_id: The source CRM account ID.
     """
-    result = await client.get_account(account_id)
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_account", {"account_id": account_id})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_account(account_id)
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 # ------------------------------------------------------------------
@@ -351,14 +540,28 @@ async def list_scorecards(
         filter_time_lt: Only scorecards before this time (ISO 8601).
         filter_rep_id: Filter by the user ID being scored.
     """
-    result = await client.list_scorecards(
-        skip=skip,
-        limit=limit,
-        filter_time_gt=filter_time_gt,
-        filter_time_lt=filter_time_lt,
-        filter_rep_id=filter_rep_id,
-    )
-    return _json(result)
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            args = {"skip": skip, "limit": limit}
+            if filter_time_gt:
+                args["filter_time_gt"] = filter_time_gt
+            if filter_time_lt:
+                args["filter_time_lt"] = filter_time_lt
+            if filter_rep_id:
+                args["filter_rep_id"] = filter_rep_id
+            return await _call_remote("list_scorecards", args)
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().list_scorecards(
+            skip=skip,
+            limit=limit,
+            filter_time_gt=filter_time_gt,
+            filter_time_lt=filter_time_lt,
+            filter_rep_id=filter_rep_id,
+        )
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 # ------------------------------------------------------------------

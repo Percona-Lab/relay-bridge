@@ -30,6 +30,7 @@ NC = "\033[0m"
 REPO_URL = "https://github.com/Percona-Lab/relay-bridge.git"
 DEFAULT_INSTALL_DIR = Path.home() / "relay-bridge"
 MCP_SERVER_NAME = "clari-copilot"
+SHERPA_SSE_URL = "http://sherpa.tp.int.percona.com:8401/sse"
 
 # Names to look for when cleaning up previous installations
 LEGACY_MCP_NAMES = [
@@ -100,8 +101,6 @@ def ask_yn(prompt: str, default: bool = True) -> bool:
 def ask_secret(prompt: str, default: str = "") -> str:
     display_default = " [****]" if default else ""
     try:
-        # getpass reads from /dev/tty by default on Unix, so it works
-        # even when stdin is a pipe — but we need our fallback wrapper
         value = getpass.getpass(f"  {prompt}{display_default}: ").strip()
         return value if value else default
     except (EOFError, KeyboardInterrupt):
@@ -123,15 +122,43 @@ def find_uv() -> str | None:
     return None
 
 
+def get_claude_desktop_config_path() -> Path | None:
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            return Path(appdata) / "Claude" / "claude_desktop_config.json"
+    elif system == "Linux":
+        return Path.home() / ".config" / "claude" / "claude_desktop_config.json"
+    return None
+
+
 # ── Steps ────────────────────────────────────────────────────────────
 
 def step_welcome() -> None:
     header("Clari Copilot MCP Server — Installer")
-    print(f"  This will set up an MCP server that gives AI agents direct")
-    print(f"  access to Clari Copilot call transcripts, summaries, and")
-    print(f"  conversation intelligence data.\n")
+    print(f"  This gives Claude direct access to Clari Copilot call")
+    print(f"  transcripts, AI summaries, and conversation intelligence.\n")
     print(f"  {DIM}Repo: {REPO_URL}{NC}")
     print(f"  {DIM}API docs: https://api-doc.copilot.clari.com{NC}\n")
+    print(f"  {BOLD}Two modes:{NC}")
+    print(f"    1. {GREEN}Remote (recommended){NC} — connect to the shared Percona server")
+    print(f"       No credentials needed. No local API keys. Just requires VPN when querying.")
+    print(f"    2. {YELLOW}Local{NC} — query the Clari Copilot API directly with your own credentials")
+    print(f"       No VPN needed, but you must have API key and secret.")
+    print()
+
+
+def choose_mode() -> str:
+    """Ask user to choose remote (SHERPA) or local mode."""
+    print(f"  {GREEN}1) Remote (recommended){NC} — no credentials, requires VPN when querying.")
+    print(f"  {YELLOW}2) Local{NC} — use your own Clari Copilot API key and secret. No VPN needed.")
+    print()
+    choice = ask("Choose mode", "1")
+    print()
+    return "remote" if choice != "2" else "local"
 
 
 def step_cleanup_previous(install_dir: Path) -> None:
@@ -145,16 +172,9 @@ def step_cleanup_previous(install_dir: Path) -> None:
     config_files: list[tuple[Path, str]] = [
         (Path.home() / ".claude" / "settings.json", "Claude Code"),
     ]
-    if platform.system() == "Darwin":
-        config_files.append((
-            Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
-            "Claude Desktop",
-        ))
-    elif platform.system() == "Windows":
-        config_files.append((
-            Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json",
-            "Claude Desktop",
-        ))
+    desktop_path = get_claude_desktop_config_path()
+    if desktop_path:
+        config_files.append((desktop_path, "Claude Desktop"))
 
     for cfg_path, cfg_label in config_files:
         if not cfg_path.exists():
@@ -168,6 +188,7 @@ def step_cleanup_previous(install_dir: Path) -> None:
                     # Extract the old install dir from the command or env
                     cmd = entry.get("command", "")
                     env_path = entry.get("env", {}).get("DOTENV_PATH", "")
+                    remote_url = entry.get("env", {}).get("REMOTE_SSE_URL", "")
                     old_dir = None
                     if env_path:
                         old_dir = Path(env_path).parent
@@ -394,16 +415,30 @@ def _configure_json_file(
     return True
 
 
-def step_configure_ai_clients(install_dir: Path, python_path: Path) -> bool:
-    header("AI Client Configuration")
-
-    mcp_entry = {
+def build_mcp_entry_local(python_path: Path, install_dir: Path) -> dict:
+    """MCP entry for local mode: credentials via DOTENV_PATH."""
+    return {
         "command": str(python_path),
         "args": ["-m", "clari_copilot_mcp.server"],
         "env": {
             "DOTENV_PATH": str(install_dir / ".env"),
         },
     }
+
+
+def build_mcp_entry_remote(python_path: Path) -> dict:
+    """MCP entry for remote mode: proxy to SHERPA via SSE."""
+    return {
+        "command": str(python_path),
+        "args": ["-m", "clari_copilot_mcp.server"],
+        "env": {
+            "REMOTE_SSE_URL": SHERPA_SSE_URL,
+        },
+    }
+
+
+def step_configure_ai_clients(mcp_entry: dict) -> bool:
+    header("AI Client Configuration")
 
     any_configured = False
 
@@ -419,20 +454,15 @@ def step_configure_ai_clients(install_dir: Path, python_path: Path) -> bool:
             if _configure_json_file(code_path, mcp_entry, "Claude Code", add_permissions=True):
                 any_configured = True
 
-    # 2. Claude Desktop — ~/Library/Application Support/Claude/claude_desktop_config.json
-    if platform.system() == "Darwin":
-        desktop_path = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
-    elif platform.system() == "Windows":
-        desktop_path = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
-    else:
-        desktop_path = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
-
-    if desktop_path.parent.exists():
-        info("Claude Desktop detected")
-        if _configure_json_file(desktop_path, mcp_entry, "Claude Desktop"):
-            any_configured = True
-    else:
-        print(f"  {DIM}Claude Desktop not detected ({desktop_path.parent}){NC}")
+    # 2. Claude Desktop
+    desktop_path = get_claude_desktop_config_path()
+    if desktop_path:
+        if desktop_path.parent.exists():
+            info("Claude Desktop detected")
+            if _configure_json_file(desktop_path, mcp_entry, "Claude Desktop"):
+                any_configured = True
+        else:
+            print(f"  {DIM}Claude Desktop not detected ({desktop_path.parent}){NC}")
 
     if any_configured:
         info(f"MCP server name: {BOLD}{MCP_SERVER_NAME}{NC}")
@@ -458,15 +488,30 @@ def step_verify(python_path: Path) -> None:
         warn(f"Verification failed: {result.stderr.strip()}")
 
 
-def step_done() -> None:
+def step_done(mode: str, any_configured: bool) -> None:
     header("Setup Complete")
     print(f"  {GREEN}{BOLD}The Clari Copilot MCP server is ready.{NC}\n")
-    print(f"  Restart Claude Code to pick up the new MCP server.")
-    print(f"  Then try asking:\n")
-    print(f"    {DIM}\"List recent Clari Copilot calls from the past week\"{NC}")
-    print(f"    {DIM}\"Get the transcript and summary for call <id>\"{NC}")
-    print(f"    {DIM}\"Search calls mentioning PostgreSQL\"{NC}")
-    print(f"    {DIM}\"Get summaries for all calls in the last 7 days\"{NC}\n")
+
+    if any_configured:
+        print(f"  {YELLOW}Restart Claude Desktop / Claude Code for changes to take effect.{NC}\n")
+
+    if mode == "remote":
+        print(f"  {BOLD}Mode: Remote{NC}")
+        print(f"  Connect to Percona VPN when querying, then try these prompts:\n")
+        print(f"    {DIM}\"List recent Clari Copilot calls from the past week\"{NC}")
+        print(f"    {DIM}\"Get the transcript and summary for call <id>\"{NC}")
+        print(f"    {DIM}\"Search calls mentioning PostgreSQL\"{NC}\n")
+        print(f"  {DIM}To switch to local mode with your own credentials, re-run this installer.{NC}")
+    else:
+        print(f"  {BOLD}Mode: Local{NC}")
+        print(f"  Try asking:\n")
+        print(f"    {DIM}\"List recent Clari Copilot calls from the past week\"{NC}")
+        print(f"    {DIM}\"Get the transcript and summary for call <id>\"{NC}")
+        print(f"    {DIM}\"Search calls mentioning PostgreSQL\"{NC}")
+        print(f"    {DIM}\"Get summaries for all calls in the last 7 days\"{NC}\n")
+
+    print(f"  {DIM}Repo: https://github.com/Percona-Lab/relay-bridge{NC}")
+    print()
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -475,6 +520,8 @@ def main() -> None:
     _reopen_tty()
     step_welcome()
 
+    mode = choose_mode()
+
     # Install location
     install_dir = Path(ask("Install directory", str(DEFAULT_INSTALL_DIR)))
     install_dir = install_dir.expanduser().resolve()
@@ -482,24 +529,41 @@ def main() -> None:
     # Clean up previous installations
     step_cleanup_previous(install_dir)
 
-    # Credentials
-    env = step_collect_credentials()
+    if mode == "remote":
+        # Remote mode — install server locally but proxy to SHERPA on each call
+        header("Remote Mode Setup")
+        print(f"  Server: {SHERPA_SSE_URL}")
+        print(f"  {DIM}No credentials needed. VPN required when running queries.{NC}\n")
 
-    # Install
-    python_path = step_install(install_dir)
+        python_path = step_install(install_dir)
 
-    # Write .env
-    step_write_env(install_dir, env)
+        # Clean up any local .env credentials so only remote works
+        local_env = install_dir / ".env"
+        if local_env.exists():
+            info("Removing local credentials (.env) — remote mode uses the shared server.")
+            local_env.unlink()
 
-    # Configure AI clients (Claude Code + Claude Desktop)
-    step_configure_ai_clients(install_dir, python_path)
+        mcp_entry = build_mcp_entry_remote(python_path)
+        any_configured = step_configure_ai_clients(mcp_entry)
+        step_verify(python_path)
+        step_done("remote", any_configured)
 
-    # Verify
-    step_verify(python_path)
+    else:
+        # Local mode — full install with credentials
+        env = step_collect_credentials()
+        python_path = step_install(install_dir)
+        step_write_env(install_dir, env)
 
-    # Done
-    step_done()
+        mcp_entry = build_mcp_entry_local(python_path, install_dir)
+        any_configured = step_configure_ai_clients(mcp_entry)
+        step_verify(python_path)
+        step_done("local", any_configured)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        print(f"\n{YELLOW}  Installation cancelled.{NC}")
+        sys.exit(1)
