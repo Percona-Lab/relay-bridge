@@ -565,6 +565,149 @@ async def list_scorecards(
 
 
 # ------------------------------------------------------------------
+# Call Intelligence Index
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+async def query_call_index(
+    product_areas: list[str] | None = None,
+    customer_type: str | None = None,
+    market_signals: list[str] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    text_search: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Search the local call intelligence index by product area, customer type, market signals, date range, or text.
+
+    Returns thin metadata (call_id, title, date, account, tags) for matching calls.
+    Use get_summary or get_call_details to fetch full details for specific calls.
+
+    The index must be built first with rebuild_call_index.
+
+    Args:
+        product_areas: Filter by product areas (MySQL, PostgreSQL, MongoDB, PMM, Operators, Everest, Valkey, Percona Toolkit, Pro Builds, Support, Consulting, ExpertOps). Any match.
+        customer_type: Filter by customer type (Enterprise/ICP, Mid-Market, SMB, Prospect, Unknown). Exact match.
+        market_signals: Filter by market signals (Migration, Upgrade, New Deployment, Performance Issue, Cost Optimization, Compliance/Security, Cloud Migration, HA/DR, Competitive Eval, Expansion, Churn Risk). Any match.
+        date_from: Only calls on or after this date (YYYY-MM-DD).
+        date_to: Only calls on or before this date (YYYY-MM-DD).
+        text_search: Search titles, accounts, deal names, users (case-insensitive substring).
+        limit: Max results to return (default 50).
+    """
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            args = {"limit": limit}
+            if product_areas:
+                args["product_areas"] = product_areas
+            if customer_type:
+                args["customer_type"] = customer_type
+            if market_signals:
+                args["market_signals"] = market_signals
+            if date_from:
+                args["date_from"] = date_from
+            if date_to:
+                args["date_to"] = date_to
+            if text_search:
+                args["text_search"] = text_search
+            return await _call_remote("query_call_index", args)
+        return _NOT_CONFIGURED_MSG
+    try:
+        from .index import CallIndex
+        index = CallIndex()
+        if index.count() == 0:
+            return _json({
+                "error": "Index is empty. Run rebuild_call_index first to populate it.",
+                "hint": "Example: rebuild_call_index(days=90)",
+            })
+        results = index.query(
+            product_areas=product_areas,
+            customer_type=customer_type,
+            market_signals=market_signals,
+            date_from=date_from,
+            date_to=date_to,
+            text_search=text_search,
+            limit=limit,
+        )
+        return _json({
+            "matches": len(results),
+            "query": {
+                "product_areas": product_areas,
+                "customer_type": customer_type,
+                "market_signals": market_signals,
+                "date_from": date_from,
+                "date_to": date_to,
+                "text_search": text_search,
+            },
+            "calls": results,
+        })
+    except Exception as e:
+        return _friendly_error("Call Index", e)
+
+
+@mcp.tool()
+async def call_index_stats() -> str:
+    """Show statistics about the local call intelligence index.
+
+    Returns counts by product area, customer type, market signal, and date range.
+    Useful for understanding what's in the index before querying.
+    """
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("call_index_stats", {})
+        return _NOT_CONFIGURED_MSG
+    try:
+        from .index import CallIndex
+        index = CallIndex()
+        if index.count() == 0:
+            return _json({
+                "error": "Index is empty. Run rebuild_call_index first to populate it.",
+                "hint": "Example: rebuild_call_index(days=90)",
+            })
+        return _json(index.stats())
+    except Exception as e:
+        return _friendly_error("Call Index", e)
+
+
+@mcp.tool()
+async def rebuild_call_index(
+    days: int = 90,
+    max_calls: int = 5000,
+    full_rebuild: bool = False,
+) -> str:
+    """Build or update the local call intelligence index from the Clari Copilot API.
+
+    Fetches call metadata and AI summaries, then tags each call by product area,
+    customer type, and market signals. Incremental by default — only indexes
+    new calls not already in the index.
+
+    This is a long-running operation (fetches call details one by one at ~6/sec).
+    For 1000 new calls, expect ~3 minutes.
+
+    Args:
+        days: How many days back to index (default 90).
+        max_calls: Max calls to fetch from the API (default 5000).
+        full_rebuild: If true, re-index all calls even if already indexed (default false).
+    """
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("rebuild_call_index", {
+                "days": days, "max_calls": max_calls, "full_rebuild": full_rebuild,
+            })
+        return _NOT_CONFIGURED_MSG
+    try:
+        from .indexer import build_index
+        result = await build_index(
+            days=days,
+            max_calls=max_calls,
+            skip_existing=not full_rebuild,
+        )
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Indexer", e)
+
+
+# ------------------------------------------------------------------
 # Entrypoint
 # ------------------------------------------------------------------
 
