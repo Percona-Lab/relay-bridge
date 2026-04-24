@@ -1,0 +1,40 @@
+#!/bin/bash
+# Clari Copilot MCP Server Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/Percona-Lab/relay-bridge/main/install-relay-bridge | bash
+
+set -e
+
+INSTALLER_URL="https://raw.githubusercontent.com/Percona-Lab/relay-bridge/main/installer.py"
+
+# When piped from curl, bash stdin is the pipe — not the terminal.
+# Re-exec with /dev/tty so interactive prompts work.
+if [ ! -t 0 ]; then
+  exec bash <(curl -fsSL "https://raw.githubusercontent.com/Percona-Lab/relay-bridge/main/install-relay-bridge") </dev/tty
+fi
+
+echo ""
+echo "Clari Copilot MCP Server Installer"
+echo ""
+
+# ── Install uv if needed ───────────────────────────────────────
+if ! command -v uv &>/dev/null; then
+  echo "  Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+  if ! command -v uv &>/dev/null; then
+    echo "  uv installed but not in PATH. Please restart your shell and re-run this installer."
+    exit 1
+  fi
+  echo "  uv installed."
+fi
+
+# ── Download and run the Python installer ─────────────────────
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+echo "  Downloading installer..."
+curl -fsSL "$INSTALLER_URL" -o "$TMPDIR/installer.py"
+
+echo "  Starting installer..."
+echo ""
+uv run --python 3.12 "$TMPDIR/installer.py"

@@ -337,16 +337,21 @@ def step_install(install_dir: Path) -> Path:
         info("Cloned successfully")
 
     # Create venv and install
+    venv_dir = install_dir / ".venv"
     if uv:
         info(f"Using uv: {uv}")
-        run([uv, "venv", str(install_dir / ".venv")], cwd=str(install_dir))
-        result = run([uv, "pip", "install", "-e", "."], cwd=str(install_dir))
+        run([uv, "venv", str(venv_dir), "--python", "3.12", "--quiet"], cwd=str(install_dir))
+        if platform.system() == "Windows":
+            py_in_venv = str(venv_dir / "Scripts" / "python.exe")
+        else:
+            py_in_venv = str(venv_dir / "bin" / "python")
+        result = run([uv, "pip", "install", "-e", ".", "--python", py_in_venv], cwd=str(install_dir))
     else:
         info("Using pip (uv not found)")
-        run([sys.executable, "-m", "venv", str(install_dir / ".venv")], cwd=str(install_dir))
-        pip = str(install_dir / ".venv" / "bin" / "pip")
+        run([sys.executable, "-m", "venv", str(venv_dir)], cwd=str(install_dir))
+        pip = str(venv_dir / "bin" / "pip")
         if platform.system() == "Windows":
-            pip = str(install_dir / ".venv" / "Scripts" / "pip.exe")
+            pip = str(venv_dir / "Scripts" / "pip.exe")
         result = run([pip, "install", "-e", "."], cwd=str(install_dir))
 
     if result.returncode != 0:
@@ -437,35 +442,69 @@ def build_mcp_entry_remote(python_path: Path) -> dict:
     }
 
 
+def _get_ai_clients() -> list[dict]:
+    """Return list of known AI clients with their config paths."""
+    system = platform.system()
+    home = Path.home()
+    clients = []
+
+    # Claude Desktop
+    desktop_path = get_claude_desktop_config_path()
+    if desktop_path:
+        clients.append({"name": "Claude Desktop", "path": desktop_path, "permissions": False})
+
+    # Claude Code
+    clients.append({
+        "name": "Claude Code",
+        "path": home / ".claude" / "settings.json",
+        "permissions": True,
+    })
+
+    # Cursor
+    clients.append({
+        "name": "Cursor",
+        "path": home / ".cursor" / "mcp.json",
+        "permissions": False,
+    })
+
+    # Windsurf
+    clients.append({
+        "name": "Windsurf",
+        "path": home / ".codeium" / "windsurf" / "mcp_config.json",
+        "permissions": False,
+    })
+
+    return clients
+
+
 def step_configure_ai_clients(mcp_entry: dict) -> bool:
     header("AI Client Configuration")
 
     any_configured = False
+    configured_names = []
 
-    # 1. Claude Code — ~/.claude/settings.json
-    code_path = Path.home() / ".claude" / "settings.json"
-    if code_path.parent.exists():
-        info("Claude Code detected")
-        if _configure_json_file(code_path, mcp_entry, "Claude Code", add_permissions=True):
-            any_configured = True
-    else:
-        print(f"  {DIM}Claude Code not detected ({code_path.parent}){NC}")
-        if ask_yn("Configure Claude Code anyway?", default=False):
-            if _configure_json_file(code_path, mcp_entry, "Claude Code", add_permissions=True):
-                any_configured = True
+    for client in _get_ai_clients():
+        name = client["name"]
+        config_path = client["path"]
+        add_permissions = client["permissions"]
+        detected = config_path.parent.exists()
 
-    # 2. Claude Desktop
-    desktop_path = get_claude_desktop_config_path()
-    if desktop_path:
-        if desktop_path.parent.exists():
-            info("Claude Desktop detected")
-            if _configure_json_file(desktop_path, mcp_entry, "Claude Desktop"):
+        if detected:
+            info(f"{name} detected — auto-configuring...")
+            if _configure_json_file(config_path, mcp_entry, name, add_permissions=add_permissions):
                 any_configured = True
+                configured_names.append(name)
         else:
-            print(f"  {DIM}Claude Desktop not detected ({desktop_path.parent}){NC}")
+            print(f"  {DIM}{name} not detected ({config_path.parent}){NC}")
+            if ask_yn(f"Configure {name} anyway?", default=False):
+                if _configure_json_file(config_path, mcp_entry, name, add_permissions=add_permissions):
+                    any_configured = True
+                    configured_names.append(name)
 
-    if any_configured:
+    if configured_names:
+        print()
         info(f"MCP server name: {BOLD}{MCP_SERVER_NAME}{NC}")
+        info(f"Configured: {', '.join(configured_names)}")
 
     return any_configured
 
