@@ -122,14 +122,35 @@ async def _call_remote(tool_name: str, arguments: dict) -> str:
                     ]
                     return "\n".join(parts) if parts else "No results."
                 return "No results returned."
-    except Exception as e:
-        msg = str(e).lower()
-        if any(k in msg for k in [
+    except BaseException as e:
+        # Unwrap ExceptionGroup/BaseExceptionGroup (raised by asyncio TaskGroup
+        # when sse_client can't reach the server — e.g. VPN not connected).
+        exceptions_to_check = []
+        if isinstance(e, BaseExceptionGroup):
+            exceptions_to_check.extend(e.exceptions)
+        else:
+            exceptions_to_check.append(e)
+
+        _VPN_TYPES = (OSError,)  # covers gaierror, ConnectionRefusedError, etc.
+        _VPN_KEYWORDS = [
             "nodename", "connecterror", "connect error",
             "timed out", "connection refused", "unreachable",
             "name or service not known", "no route to host",
-        ]):
-            return _VPN_REQUIRED_MSG
+        ]
+        for exc in exceptions_to_check:
+            if isinstance(exc, _VPN_TYPES):
+                return _VPN_REQUIRED_MSG
+            if any(k in str(exc).lower() for k in _VPN_KEYWORDS):
+                return _VPN_REQUIRED_MSG
+
+        # If the outer wrapper itself is an ExceptionGroup with no network clue,
+        # still surface a VPN hint — unreachable SSE is the most common cause.
+        if isinstance(e, BaseExceptionGroup):
+            return (
+                _VPN_REQUIRED_MSG
+                + f"\n\n_(underlying error: {e})_"
+            )
+
         return f"**Remote query failed:** {type(e).__name__}: {e}"
 
 
@@ -516,9 +537,50 @@ async def get_account(account_id: str) -> str:
         return _friendly_error("Clari Copilot", e)
 
 
+@mcp.tool()
+async def get_contact(contact_id: str) -> str:
+    """Get CRM contact details from Clari Copilot.
+
+    Returns contact name, email, title, account linkage, and custom fields
+    as synced from the source CRM (typically Salesforce).
+
+    Args:
+        contact_id: The source CRM contact ID (e.g. SFDC 003... ID, available
+            in call payloads under crm_info.contact_ids).
+    """
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("get_contact", {"contact_id": contact_id})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().get_contact(contact_id)
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
+
+
 # ------------------------------------------------------------------
 # Scorecards
 # ------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_scorecard_templates() -> str:
+    """List all scorecard templates configured in Clari Copilot.
+
+    Returns the set of template IDs and their question structure — useful
+    for understanding what evaluation criteria are being applied to calls
+    before querying list_scorecards.
+    """
+    if not _local_enabled():
+        if _REMOTE_SSE_URL:
+            return await _call_remote("list_scorecard_templates", {})
+        return _NOT_CONFIGURED_MSG
+    try:
+        result = await _client_instance().list_scorecard_templates()
+        return _json(result)
+    except Exception as e:
+        return _friendly_error("Clari Copilot", e)
 
 
 @mcp.tool()
@@ -577,12 +639,18 @@ async def query_call_index(
     date_from: str | None = None,
     date_to: str | None = None,
     text_search: str | None = None,
+    deal_value_gt: float | None = None,
+    deal_value_lt: float | None = None,
+    deal_stage: str | None = None,
+    deal_close_from: str | None = None,
+    deal_close_to: str | None = None,
+    has_deal: bool | None = None,
     limit: int = 50,
 ) -> str:
-    """Search the local call intelligence index by product area, customer type, market signals, date range, or text.
+    """Search the local call intelligence index by product area, customer type, market signals, deal context, date range, or text.
 
-    Returns thin metadata (call_id, title, date, account, tags) for matching calls.
-    Use get_summary or get_call_details to fetch full details for specific calls.
+    Returns thin metadata (call_id, title, date, account, tags, deal_value, deal_stage, etc.)
+    for matching calls. Use get_summary or get_call_details to fetch full details.
 
     The index must be built first with rebuild_call_index.
 
@@ -592,7 +660,13 @@ async def query_call_index(
         market_signals: Filter by market signals (Migration, Upgrade, New Deployment, Performance Issue, Cost Optimization, Compliance/Security, Cloud Migration, HA/DR, Competitive Eval, Expansion, Churn Risk). Any match.
         date_from: Only calls on or after this date (YYYY-MM-DD).
         date_to: Only calls on or before this date (YYYY-MM-DD).
-        text_search: Search titles, accounts, deal names, users (case-insensitive substring).
+        text_search: Search titles, accounts, deal names, users, contacts (case-insensitive substring).
+        deal_value_gt: Only calls whose linked deal value (USD-equivalent string) is greater than this. Calls without a deal value are excluded.
+        deal_value_lt: Only calls whose linked deal value is less than this. Calls without a deal value are excluded.
+        deal_stage: Exact match against deal_stage_before_call (e.g. "Proposal/Price Quote", "Qualify", "Closed Won").
+        deal_close_from: Only calls whose linked deal closes on or after this date (YYYY-MM-DD).
+        deal_close_to: Only calls whose linked deal closes on or before this date (YYYY-MM-DD).
+        has_deal: If true, only calls with a linked deal. If false, only calls without one.
         limit: Max results to return (default 50).
     """
     if not _local_enabled():
@@ -610,6 +684,18 @@ async def query_call_index(
                 args["date_to"] = date_to
             if text_search:
                 args["text_search"] = text_search
+            if deal_value_gt is not None:
+                args["deal_value_gt"] = deal_value_gt
+            if deal_value_lt is not None:
+                args["deal_value_lt"] = deal_value_lt
+            if deal_stage:
+                args["deal_stage"] = deal_stage
+            if deal_close_from:
+                args["deal_close_from"] = deal_close_from
+            if deal_close_to:
+                args["deal_close_to"] = deal_close_to
+            if has_deal is not None:
+                args["has_deal"] = has_deal
             return await _call_remote("query_call_index", args)
         return _NOT_CONFIGURED_MSG
     try:
@@ -627,6 +713,12 @@ async def query_call_index(
             date_from=date_from,
             date_to=date_to,
             text_search=text_search,
+            deal_value_gt=deal_value_gt,
+            deal_value_lt=deal_value_lt,
+            deal_stage=deal_stage,
+            deal_close_from=deal_close_from,
+            deal_close_to=deal_close_to,
+            has_deal=has_deal,
             limit=limit,
         )
         return _json({
@@ -638,6 +730,12 @@ async def query_call_index(
                 "date_from": date_from,
                 "date_to": date_to,
                 "text_search": text_search,
+                "deal_value_gt": deal_value_gt,
+                "deal_value_lt": deal_value_lt,
+                "deal_stage": deal_stage,
+                "deal_close_from": deal_close_from,
+                "deal_close_to": deal_close_to,
+                "has_deal": has_deal,
             },
             "calls": results,
         })

@@ -30,6 +30,15 @@ class IndexedCall:
     product_areas: list[str]
     customer_type: str
     market_signals: list[str]
+    # Deal context (populated when Copilot has CRM linkage to the call)
+    deal_value: str = ""  # string amount in account currency
+    deal_close_date: str = ""  # ISO 8601
+    deal_stage_before_call: str = ""  # e.g. "Proposal/Price Quote", "Qualify"
+    source_crm: str = ""  # e.g. "SALESFORCE"
+    deal_id: str = ""  # CRM source ID, usable with get_deal
+    account_id: str = ""  # CRM source ID, usable with get_account
+    contact_ids: list[str] = field(default_factory=list)
+    contact_names: list[str] = field(default_factory=list)
     indexed_at: str = ""  # when this record was created/updated
 
 
@@ -100,6 +109,12 @@ class CallIndex:
         date_from: str | None = None,
         date_to: str | None = None,
         text_search: str | None = None,
+        deal_value_gt: float | None = None,
+        deal_value_lt: float | None = None,
+        deal_stage: str | None = None,
+        deal_close_from: str | None = None,
+        deal_close_to: str | None = None,
+        has_deal: bool | None = None,
         limit: int = 50,
     ) -> list[dict]:
         """Query the index with filters. Returns matching call records."""
@@ -129,7 +144,35 @@ class CallIndex:
             if date_to and call_date > date_to:
                 continue
 
-            # Text search (title + account + deal + users + participants)
+            # Deal filters
+            if has_deal is not None:
+                linked = bool(call.get("deal_id", "") or call.get("deal_name", ""))
+                if has_deal != linked:
+                    continue
+
+            if deal_stage and call.get("deal_stage_before_call", "") != deal_stage:
+                continue
+
+            if deal_value_gt is not None or deal_value_lt is not None:
+                raw = call.get("deal_value", "")
+                try:
+                    val = float(raw) if raw else None
+                except (TypeError, ValueError):
+                    val = None
+                if val is None:
+                    continue
+                if deal_value_gt is not None and val <= deal_value_gt:
+                    continue
+                if deal_value_lt is not None and val >= deal_value_lt:
+                    continue
+
+            close = call.get("deal_close_date", "")[:10]  # trim to YYYY-MM-DD
+            if deal_close_from and close < deal_close_from:
+                continue
+            if deal_close_to and (not close or close > deal_close_to):
+                continue
+
+            # Text search (title + account + deal + users + participants + contacts)
             if text_lower:
                 searchable = " ".join([
                     call.get("title", ""),
@@ -137,6 +180,7 @@ class CallIndex:
                     call.get("deal_name", ""),
                     " ".join(call.get("users", [])),
                     " ".join(call.get("external_participants", [])),
+                    " ".join(call.get("contact_names", [])),
                 ]).lower()
                 if text_lower not in searchable:
                     continue

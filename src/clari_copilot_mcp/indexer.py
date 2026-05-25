@@ -176,6 +176,7 @@ async def build_index(
                 except ValueError:
                     duration = 0
 
+            crm_info = call.get("crm_info", {}) or {}
             record = IndexedCall(
                 call_id=call_id,
                 title=title,
@@ -189,6 +190,14 @@ async def build_index(
                 product_areas=tags.product_areas,
                 customer_type=tags.customer_type,
                 market_signals=tags.market_signals,
+                deal_value=str(call.get("deal_value", "") or ""),
+                deal_close_date=call.get("deal_close_date", "") or "",
+                deal_stage_before_call=call.get("deal_stage_before_call", "") or "",
+                source_crm=crm_info.get("source_crm", "") or "",
+                deal_id=crm_info.get("deal_id", "") or "",
+                account_id=crm_info.get("account_id", "") or "",
+                contact_ids=list(crm_info.get("contact_ids", []) or []),
+                contact_names=list(call.get("contact_names", []) or []),
             )
             batch.append(record)
             newly_indexed += 1
